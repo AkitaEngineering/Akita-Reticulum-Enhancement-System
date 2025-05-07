@@ -1,0 +1,95 @@
+{
+    "type": "object",
+    "properties": {
+        "logging": {
+            "type": "object",
+            "properties": {
+                "level": {"type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]},
+                "file": {"type": ["string", "null"]},
+                "max_bytes": {"type": "integer", "minimum": 1024},
+                "backup_count": {"type": "integer", "minimum": 0},
+                "console_output": {"type": "boolean"},
+                "module_levels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string",
+                        "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+                    }
+                }
+            },
+            "additionalProperties": false
+        },
+        "ares_core": {
+            "type": "object",
+            "properties": {
+                "rns_config_path": {"type": "string"},
+                "enable_transport_node_features": {"type": "boolean"},
+                "config_schema_path": {"type": ["string", "null"]},
+                "main_loop_sleep_interval": {"type": "integer", "minimum": 1}
+            },
+            "required": ["rns_config_path"],
+            "additionalProperties": false
+        },
+        "request_retries": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "default_max_retries": {"type": "integer", "minimum": 0},
+                "default_delay_seconds": {"type": "number", "minimum": 0},
+                "default_backoff_factor": {"type": "number", "minimum": 1},
+                "default_jitter_max_seconds": {"type": "number", "minimum": 0},
+                "log_retries": {"type": "boolean"}
+            },
+            "additionalProperties": false
+        },
+        "path_selection": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "default_metric": {"type": "string", "enum": ["rtt", "hops", "link_quality", "custom"]},
+                "metric_update_interval_seconds": {"type": "integer", "minimum": 1},
+                "custom_metrics_module": {"type": ["string", "null"]},
+                "rtt_probe_timeout_seconds": {"type": "number", "minimum": 0.1},
+                "max_paths_to_consider": {"type": "integer", "minimum": 1}
+            },
+            "additionalProperties": false
+        },
+        "destination_proxying": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "proxy_routes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "alias": {"type": "string"},
+                            "entry_destination_name": {"type": "string"},
+                            "exit_node_identity_hash": {"type": "string", "pattern": "^[a-f0-9]{32}$"}, # Reticulum hashes are 16 bytes (32 hex chars)
+                            "target_network_prefix": {"type": "string"},
+                            "allow_all_targets": {"type": "boolean"},
+                            "allowed_target_aspects": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["alias", "entry_destination_name", "exit_node_identity_hash"],
+                        "additionalProperties": false
+                    }
+                },
+                "is_proxy_node": {"type": "boolean"},
+                "listen_on_aspect": {"type": "string"},
+                "proxy_protocol_version": {"type": "string"}
+            },
+            "additionalProperties": false
+        },
+        "monitoring": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "prometheus_port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+                "metrics_prefix": {"type": "string"},
+                "enable_health_endpoint": {"type": "boolean"}
+            },
+            "additionalProperties": false
+        }
+    },
+    "additionalProperties": true
+}
