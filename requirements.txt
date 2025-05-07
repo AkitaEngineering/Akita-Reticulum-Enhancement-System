@@ -1,0 +1,3 @@
+rns # Reticulum Network Stack library
+jsonschema # For config validation
+prometheus_client # For exposing metrics
