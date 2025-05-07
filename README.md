@@ -1,130 +1,123 @@
-# Akita Reticulum Enhancement System
+# Akita Reticulum Enhancement System (ARES)
 
-The Akita Reticulum Enhancement System is designed to elevate the Reticulum network stack by providing robust, modular, and feature-rich enhancements.
+**Organization:** Akita Engineering
+**Website:** www.akitaengineering.com
+**License:** GPLv3
+**Version:** 0.1.5-alpha
 
-## Features
+## Overview
+
+The Akita Reticulum Enhancement System (ARES) is designed to elevate the Reticulum network stack by providing robust, modular, and feature-rich enhancements. This system aims to improve the resilience, performance, observability, and overall capabilities of applications built on Reticulum.
+
+ARES is built with a modular architecture, allowing features to be developed, integrated, and maintained independently.
+
+## Core Goals
+
+* **Enhance Robustness:** Implement features like advanced request retries and circuit breakers.
+* **Improve Performance:** Introduce intelligent mechanisms like metric-based path selection.
+* **Increase Capabilities:** Add functionalities such as globally routable multicast and destination proxying.
+* **Simplify Management:** Provide comprehensive configuration, centralized logging, and a CLI.
+* **Ensure Reliability:** Through comprehensive error handling and thorough testing.
+
+## Features (Planned & In Development)
 
 * **Robust Request Retries:**
-    * Automatic retry mechanism for all `Reticulum.request()` calls.
+    * Automatic retry mechanism for `Reticulum.request()` calls.
     * Configurable retry parameters (retries, delay, jitter).
     * Detailed logging of retry attempts and failures.
+    * Metrics for retry attempts, successes, failures, and duration.
 * **Metric-Based Path Selection:**
-    * Intelligent routing decisions based on network metrics (e.g., latency).
+    * Intelligent routing decisions based on network metrics (e.g., RTT, hop count, link quality).
     * Dynamic path selection to optimize network performance.
-    * Integration with Reticulum's transport layer.
-* **Globally Routable Multicast:**
+    * Support for custom metric evaluation modules.
+    * Metrics for path selection events and chosen path quality.
+* **Globally Routable Multicast:** (Planned)
     * Efficient delivery of data to multiple destinations simultaneously.
-    * Integration with Reticulum's multicast transport layer.
 * **Destination Proxying:**
     * Enables communication with destinations behind firewalls or in private networks.
-    * Manages proxy routes within the Reticulum transport layer.
+    * Client-side configuration for using proxies.
+    * Server-side functionality for acting as a proxy node.
+    * Simple protocol for proxying requests and responses (conceptual).
+    * Validation of configured proxy hash formats.
+    * Metrics for proxied traffic and active clients/routes.
 * **Comprehensive Configuration Management:**
+    * JSON configuration file.
     * JSON schema validation for configuration files.
     * Default configuration file with sensible defaults.
-    * Dynamic configuration reloading.
+    * Dynamic configuration reloading via SIGHUP.
 * **Centralized Logging and Monitoring:**
-    * Centralized logging system with configurable log levels.
-    * Metric monitoring using Prometheus.
-    * Alerting capabilities (to be further implemented).
+    * Centralized logging system with configurable root level and **per-module levels**.
+    * Log rotation based on size and backup count.
+    * **CLI override** for global log level.
+    * Metric monitoring and export via Prometheus.
+    * Basic health check endpoint (conceptual).
 * **Command-Line Interface (CLI):**
-    * CLI for managing configuration, metrics, and logging.
+    * `start`: Starts the ARES application (default command).
+    * `configtest`: Validates the configuration file syntax and schema.
+    * `status`: Placeholder for querying runtime status.
+    * Global options: `--config`, `--schema`, `--loglevel`, `--version`.
 * **Robust Error Handling:**
-    * Comprehensive Exception handling.
-    * Circuit breaker pattern implementation.
-    * Health checks.
-* **Comprehensive Testing:**
-    * Unit and integration tests.
+    * Comprehensive exception handling.
+    * Circuit breaker pattern implementation (basic).
+    * Health checks (planned).
+* **Comprehensive Testing:** (In Progress)
+    * Unit tests for individual modules and functions (`tests/`). **(Core tests implemented)**
+    * Integration tests for interactions between ARES components (planned).
+    * End-to-end tests for user scenarios (planned, requires RNS environment).
 
-## Directory Structure
+## Project Structure
 
-```
-reticulum_akita/
-├── init.py
-├── akita_retry.py
-├── akita_routing.py
-├── akita_multicast.py
-├── akita_proxy.py
-├── akita_config.py
-├── akita_logging.py
-├── akita_metrics.py
-├── akita_cli.py
-└── tests/
-├── init.py
-├── test_akita_retry.py
-├── test_akita_routing.py
-├── ...
-```
-## Installation
+The project is organized into the following main directories:
 
-1.  Clone the repository or download the source code.
-2.  Install the required dependencies: `pip install jsonschema prometheus_client`
-3.  Place the `reticulum_akita` directory in your Python path.
-4.  Ensure you have Reticulum installed and configured.
+* `akita_ares/`: Source code.
+    * `core/`: Core components like configuration management, logging, and common utilities.
+    * `features/`: Individual enhancement modules.
+    * `cli/`: Command-line interface components.
+    * `main.py`: Main application orchestrator.
+* `tests/`: Unit and integration tests.
+    * `core/` **(Unit tests added)**
+    * `features/`
+* `examples/`: Example configurations (`sample_config.json`, `config_schema.json`).
+* `docs/`: Project documentation (to be added).
 
-## Usage
+## Getting Started
+
+### Prerequisites
+
+* Python 3.7+
+* Reticulum Network Stack (RNS) installed and configured. (`pip install rns`)
+* Dependencies: `jsonschema`, `prometheus_client` (install via `pip install -r requirements.txt`).
+
+### Installation
+
+(To be detailed - typically involves cloning the repository and potentially `pip install .`)
 
 ### Configuration
 
-* **Load Configuration:** `python -m reticulum_akita.akita_cli config load --file akita_config.json`
-* **Save Configuration:** `python -m reticulum_akita.akita_cli config save --file akita_config.json key1=value1 key2={"nested": "value"}`
+1.  Copy `examples/sample_config.json` to a working location (e.g., `~/.ares/config.json` or project root).
+2.  Modify the configuration as needed. Key sections:
+    * `ares_core`: Path to your RNS configuration.
+    * `logging`: Logging level, file, and per-module levels.
+    * Feature-specific sections (`request_retries`, `path_selection`, `destination_proxying`, `monitoring`): Enable/disable and configure features.
+3.  Ensure the schema (`examples/config_schema.json` or custom) is accessible if validation is desired.
 
-### Metrics
+### Running ARES
 
-* **Start Metrics Server:** `python -m reticulum_akita.akita_cli metrics --port 8000`
-* Configure Prometheus to scrape the metrics endpoint at `http://localhost:8000/metrics`.
+Use the command-line interface:
 
-### Logging
+```bash
+# From project root or with PYTHONPATH set
+# Ensure RNS is running or configured correctly first!
+python -m akita_ares.cli.main_cli --config /path/to/your/ares_config.json --loglevel DEBUG
+# (No command needed, 'start' is default)
 
-* **Set Logging Level:** `python -m reticulum_akita.akita_cli logging --level DEBUG`
+# Validate config:
+python -m akita_ares.cli.main_cli configtest --config /path/to/config.json
 
-### Using Modules in Your Code
+# Show version:
+python -m akita_ares.cli.main_cli --version
 
-```python
-import reticulum_akita as akita
-import RNS
-
-# Example using retry
-retry = akita.RequestRetry(retries=5)
-success = retry.execute(RNS.Destination("dest_string"), b"content")
-
-# Example using routing
-routing = akita.RoutingManager()
-routing.update_metric(RNS.Transport.interfaces[0], "latency", 10)
-best_interface = routing.select_best_path(RNS.Destination("dest_string"))
-
-# Example using multicast
-multicast = akita.MulticastManager()
-multicast.join_group("group", RNS.Destination("dest_string"))
-
-# Example using proxy
-proxy = akita.ProxyManager()
-proxy.add_proxy_route(RNS.Destination("dest1"), RNS.Destination("dest2"))
-
-#Example using config
-config = akita.load_config()
-print(config)
-akita.save_config({"test":"test"})
-
-#Example using logging
-akita.setup_logging(logging.DEBUG)
-
-#Example using metrics
-akita.setup_metrics(8001)
+# Run unit tests:
+python -m unittest discover tests
 ```
 
-# Integration
-
-To fully integrate these modules into a live Reticulum environment, modifications to Reticulum's core code are required.
-
-* **Request Retries:** Replace direct `RNS.Reticulum.request()` calls with `RequestRetry.execute()`.
-* **Routing:** Modify `RNS.Transport` routing logic to use `RoutingManager.select_best_path()`.
-* **Multicast:** Use the `MulticastManager` methods.
-* **Proxying:** Use the `ProxyManager` methods.
-
-# Testing
-
-* **Run Unit Tests:** `python -m unittest discover reticulum_akita/tests`
-
-# Contributing
-
-Contributions are welcome! Please submit pull requests or open issues for bug reports or feature requests.
