@@ -88,10 +88,6 @@ The project is organized into the following main directories:
 * Reticulum Network Stack (RNS) installed and configured. (`pip install rns`)
 * Dependencies: `jsonschema`, `prometheus_client` (install via `pip install -r requirements.txt`).
 
-### Installation
-
-(To be detailed - typically involves cloning the repository and potentially `pip install .`)
-
 ### Configuration
 
 1.  Copy `examples/sample_config.json` to a working location (e.g., `~/.ares/config.json` or project root).
