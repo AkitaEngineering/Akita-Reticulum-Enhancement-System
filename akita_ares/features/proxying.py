@@ -4,8 +4,36 @@ try:
     import RNS; from RNS import Identity, Destination, Packet, Link; RNS_AVAILABLE = True
 except ImportError:
     RNS_AVAILABLE = False
-    class Identity: pass; class Destination: IN, OUT, SINGLE, GROUP, PLAIN = 0,1,2,3,4; @staticmethod
-    def ummutable(h, type=None, direction=None): return None; class Packet: def __init__(self, dest, data, id=None): pass; def send(self): pass; def set_response_callback(self, cb): pass; class Link: def __init__(self, dest, id=None): self.link_id=os.urandom(16); self.destination=dest; def set_resource_callback(self,cb): pass; def set_link_closed_callback(self,cb):pass; def set_established_callback(self,cb):pass; def send(self,d):pass; def close(self):pass; def is_active(self): return False
+    class Identity:
+        pass
+    class Destination:
+        IN, OUT, SINGLE, GROUP, PLAIN = 0, 1, 2, 3, 4
+        @staticmethod
+        def ummutable(h, type=None, direction=None):
+            return None
+    class Packet:
+        def __init__(self, dest, data, id=None):
+            pass
+        def send(self):
+            pass
+        def set_response_callback(self, cb):
+            pass
+    class Link:
+        def __init__(self, dest, id=None):
+            self.link_id = os.urandom(16)
+            self.destination = dest
+        def set_resource_callback(self, cb):
+            pass
+        def set_link_closed_callback(self, cb):
+            pass
+        def set_established_callback(self, cb):
+            pass
+        def send(self, d):
+            pass
+        def close(self):
+            pass
+        def is_active(self):
+            return False
 PROXY_PROTOCOL_VERSION_1_0 = "1.0"; RNS_HASH_REGEX = re.compile(r'^[a-f0-9]{32}$')
 class ProxyManager:
     def __init__(self, config, rns_instance=None, metrics_monitor=None):
@@ -159,11 +187,31 @@ class ProxyManager:
             if self.is_proxy_node: count=len(self.active_client_links); self.logger.debug(f"ProxyMan (node) check. Active links:{count}"); self.metrics_monitor.set_active_proxy_clients_count(count) if self.metrics_monitor else None
             else: self.logger.debug(f"ProxyMan (client) check. Config routes:{len(self.proxy_routes)}")
     def _shutdown_client_proxy_resources(self): self.logger.info("Shutting down client proxy resources."); self.proxy_routes=[]
-    def _shutdown_proxy_service_destination(self): # Server-side cleanup
-        if not RNS_AVAILABLE: return
+    def _shutdown_proxy_service_destination(self):  # Server-side cleanup
+        if not RNS_AVAILABLE:
+            return
         with self.lock:
-            if self.service_destination: self.logger.info(f"Closing proxy service destination {self.service_destination.hash_hex()}..."); try: self.service_destination.close() except Exception as e: self.logger.error(f"Error closing proxy service destination: {e}"); self.service_destination=None
-            for link_id, link in list(self.active_client_links.items()): self.logger.debug(f"Closing active client link {link_id} during shutdown."); try: link.close() if link.is_active() else None; except Exception as e: self.logger.error(f"Error closing client link {link_id}: {e}")
-            self.active_client_links.clear(); self.pending_client_requests.clear()
-            if self.metrics_monitor: self.metrics_monitor.set_active_proxy_clients_count(0)
-    def shutdown(self): self.logger.info("ProxyManager shutting down..."); self._shutdown_proxy_service_destination() if self.is_proxy_node else self._shutdown_client_proxy_resources()
+            if self.service_destination:
+                self.logger.info(f"Closing proxy service destination {self.service_destination.hash_hex()}...")
+                try:
+                    self.service_destination.close()
+                except Exception as e:
+                    self.logger.error(f"Error closing proxy service destination: {e}")
+                self.service_destination = None
+            for link_id, link in list(self.active_client_links.items()):
+                self.logger.debug(f"Closing active client link {link_id} during shutdown.")
+                try:
+                    if link.is_active():
+                        link.close()
+                except Exception as e:
+                    self.logger.error(f"Error closing client link {link_id}: {e}")
+            self.active_client_links.clear()
+            self.pending_client_requests.clear()
+            if self.metrics_monitor:
+                self.metrics_monitor.set_active_proxy_clients_count(0)
+    def shutdown(self):
+        self.logger.info("ProxyManager shutting down...")
+        if self.is_proxy_node:
+            self._shutdown_proxy_service_destination()
+        else:
+            self._shutdown_client_proxy_resources()

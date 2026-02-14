@@ -2,7 +2,15 @@ import unittest, logging, os, tempfile
 from akita_ares.core.logger import setup_logging, get_logger, update_module_log_levels, ARES_LOGGER_NAME
 class TestLogger(unittest.TestCase):
     def setUp(self): self.temp_dir = tempfile.TemporaryDirectory(); self.log_file_path = os.path.join(self.temp_dir.name, 'test_ares.log'); root_logger = logging.getLogger(ARES_LOGGER_NAME); root_logger.handlers.clear(); root_logger.setLevel(logging.CRITICAL + 1); logging.getLogger(f"{ARES_LOGGER_NAME}.TestModule").setLevel(logging.NOTSET); logging.getLogger(f"{ARES_LOGGER_NAME}.AnotherModule").setLevel(logging.NOTSET)
-    def tearDown(self): root_logger = logging.getLogger(ARES_LOGGER_NAME); [h.close(); root_logger.removeHandler(h) for h in root_logger.handlers[:]]; self.temp_dir.cleanup()
+    def tearDown(self):
+        root_logger = logging.getLogger(ARES_LOGGER_NAME)
+        for h in root_logger.handlers[:]:
+            try:
+                h.close()
+            except Exception:
+                pass
+            root_logger.removeHandler(h)
+        self.temp_dir.cleanup()
     def test_setup_logging_defaults(self): setup_logging(log_file=self.log_file_path, console_output=False); root_logger = logging.getLogger(ARES_LOGGER_NAME); self.assertEqual(root_logger.level, logging.INFO); self.assertTrue(any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root_logger.handlers)); self.assertTrue(os.path.exists(self.log_file_path))
     def test_setup_logging_levels(self): setup_logging(level='DEBUG', console_output=False, log_file=None); self.assertEqual(logging.getLogger(ARES_LOGGER_NAME).level, logging.DEBUG); setup_logging(level='WARNING', console_output=False, log_file=None); self.assertEqual(logging.getLogger(ARES_LOGGER_NAME).level, logging.WARNING)
     def test_get_logger(self): setup_logging(level='INFO', console_output=False, log_file=None); root_logger = get_logger(); self.assertEqual(root_logger.name, ARES_LOGGER_NAME); feature_logger = get_logger("Feature.Test"); self.assertEqual(feature_logger.name, f"{ARES_LOGGER_NAME}.Feature.Test"); self.assertEqual(feature_logger.level, logging.NOTSET); self.assertEqual(feature_logger.getEffectiveLevel(), logging.INFO) 

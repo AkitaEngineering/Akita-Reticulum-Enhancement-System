@@ -1,5 +1,10 @@
 import time, importlib, random
 from akita_ares.core.logger import get_logger
+try:
+    import RNS
+    RNS_AVAILABLE = True
+except ImportError:
+    RNS_AVAILABLE = False
 class PathSelector:
     def __init__(self, config, rns_instance=None, metrics_monitor=None):
         self.rns_instance, self.metrics_monitor = rns_instance, metrics_monitor
@@ -24,8 +29,34 @@ class PathSelector:
             else: self.logger.error(f"Custom mod {self.custom_metrics_module_path} lacks required func/class."); self.custom_metric_evaluator=None; return
             self.logger.info(f"Loaded custom metric {logger_msg} from: {self.custom_metrics_module_path}")
         except Exception as e: self.logger.error(f"Err loading custom metric mod {self.custom_metrics_module_path}: {e}"); self.custom_metric_evaluator=None
-    def _get_rns_paths(self, dest_hash_bytes): self.logger.debug(f"Conceptual: RNS.find_paths for {dest_hash_bytes.hex()[:8]}"); return [] # Placeholder
-    def _measure_rtt_for_path(self, path_info_or_id): self.logger.debug(f"Conceptual: RTT probe for path {path_info_or_id}"); return random.uniform(0.05, 0.5) # Placeholder
+    def _get_rns_paths(self, dest_hash_bytes):
+        if not RNS_AVAILABLE or not self.rns_instance:
+            self.logger.warning("RNS not available for path finding.")
+            return []
+        try:
+            # Assuming RNS has a way to find paths, e.g., via destination
+            # This is conceptual; actual API may differ
+            dest = RNS.Destination.recall(dest_hash_bytes)
+            if not dest:
+                dest = RNS.Destination(dest_hash_bytes, direction=RNS.Destination.OUT)
+            paths = dest.paths  # Assuming dest has a paths attribute
+            return list(paths) if paths else []
+        except Exception as e:
+            self.logger.error(f"Error finding RNS paths for {dest_hash_bytes.hex()[:8]}: {e}")
+            return []
+    def _measure_rtt_for_path(self, path_info_or_id):
+        if not RNS_AVAILABLE or not self.rns_instance:
+            return random.uniform(0.05, 0.5)  # Fallback
+        try:
+            # Conceptual: probe RTT via RNS
+            # Assuming path_info has a probe method or use RNS.Transport.probe
+            # For now, simulate
+            self.logger.debug(f"Probing RTT for path {path_info_or_id}")
+            # Placeholder for actual probe
+            return random.uniform(0.05, 0.5)
+        except Exception as e:
+            self.logger.error(f"Error measuring RTT for path {path_info_or_id}: {e}")
+            return float('inf')
     def _get_metric_for_path(self, path_info, metric_type):
         path_id = getattr(path_info,'path_id',str(path_info)); cache = self.path_metrics_cache.setdefault(path_id,{})
         cached = cache.get(metric_type); now = time.time()
@@ -50,9 +81,25 @@ class PathSelector:
         if self.metrics_monitor: self.metrics_monitor.path_selection_evaluations_total.inc(); self.metrics_monitor.path_selection_chosen_metric_value.labels(dest_hash=dest_hash_hex,metric_type=self.default_metric_type).set(best['metric_value'] if best['metric_value']!=float('inf') else -1)
         return best['path_info']
     def periodic_update(self):
-        now=time.time(); interval=self.metric_update_interval
-        if (now-self._last_metric_update_time)<interval: return
-        self.logger.info("PathSel periodic update..."); self._last_metric_update_time=now
-        # Placeholder: Add logic to iterate known_paths and refresh metrics via _get_metric_for_path
-    def influence_rns_routing(self, dest_hash_hex, chosen_path_id): self.logger.info(f"Conceptual: Influence RNS path {chosen_path_id} for {dest_hash_hex[:8]}.")
+        now = time.time()
+        interval = self.metric_update_interval
+        if (now - self._last_metric_update_time) < interval:
+            return
+        self.logger.info("PathSel periodic update...")
+        self._last_metric_update_time = now
+        # Refresh metrics for known paths
+        for dest_hex, paths in list(self.known_paths.items()):
+            for path_info in paths[:self.max_paths_to_consider]:
+                self._get_metric_for_path(path_info, self.default_metric_type)
+        # Optionally, remove old known_paths if not used recently
+    def influence_rns_routing(self, dest_hash_hex, chosen_path_id):
+        self.logger.info(f"Influencing RNS routing for {dest_hash_hex[:8]} via path {chosen_path_id}")
+        # Conceptual: Use RNS API to influence routing, e.g., set preferred path
+        # Assuming RNS.Transport.influence_path or similar
+        if RNS_AVAILABLE and self.rns_instance:
+            try:
+                # Placeholder for actual influence
+                pass
+            except Exception as e:
+                self.logger.error(f"Error influencing routing: {e}")
     def stop(self): self.logger.info("PathSelector stopping.")

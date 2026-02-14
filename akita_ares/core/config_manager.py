@@ -26,10 +26,21 @@ class ConfigManager:
         except jsonschema_exceptions.ValidationError as e: logger.error(f"Config validation err: {e.message} (Path:{list(e.path)})"); self._handle_load_fail()
         except IOError as e: logger.error(f"IOError reading {self.config_fp}: {e}"); self._handle_load_fail()
         except Exception as e: logger.error(f"Unexpected err loading config: {e}"); self._handle_load_fail()
-    def _handle_load_fail(self): self.config={} if not self.config else None # Reset only if initial load fails
+    def _handle_load_fail(self):
+        # If there was no previously-loaded config, reset to an empty dict.
+        # If a config was already loaded, keep it unchanged (do not set to None).
+        if not self.config:
+            self.config = {}
+
     def validate_config_schema(self, cfg_data):
-        if not self.schema: logger.warning(f"Schema '{self.schema_path}' not loaded, skipping validation.") if self.schema_path else None; return
-        logger.debug("Validating config vs schema..."); validate(instance=cfg_data,schema=self.schema); logger.info("Config schema validation OK.")
+        if not self.schema:
+            if self.schema_path:
+                logger.warning(f"Schema '{self.schema_path}' not loaded, skipping validation.")
+            return
+
+        logger.debug("Validating config vs schema...")
+        validate(instance=cfg_data, schema=self.schema)
+        logger.info("Config schema validation OK.")
     def get_config(self): return self.config
     def get_section(self, sec_name, default=None): return self.config.get(sec_name,default if default is not None else {})
     def reload_config(self):

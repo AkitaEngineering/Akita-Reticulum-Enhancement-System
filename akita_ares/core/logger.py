@@ -17,12 +17,22 @@ def setup_logging(level='INFO',log_file='ares.log',max_bytes=10485760,backup_cou
             if not any(isinstance(h,logging.StreamHandler) for h in root_logger.handlers): ch=logging.StreamHandler(sys.stdout); ch.setFormatter(formatter); root_logger.addHandler(ch); print("WARNING: Fallback console logging.",file=sys.stderr)
     update_module_log_levels(module_levels); root_logger.info(f"ARES logging init. Root Level: {level.upper()}.")
 def update_module_log_levels(module_levels_dict):
-    if not module_levels_dict: return
-    root_logger=logging.getLogger(ARES_LOGGER_NAME); root_logger.debug(f"Applying module levels: {module_levels_dict}")
-    for name,lvl_str in module_levels_dict.items():
-        try: mod_log=logging.getLogger(name); lvl=getattr(logging,lvl_str.upper(),None)
-        if lvl is not None: mod_log.setLevel(lvl); root_logger.info(f"Set level for '{name}' to {lvl_str.upper()}")
-        else: root_logger.warning(f"Invalid level '{lvl_str}' for logger '{name}'.")
-        except Exception as e: root_logger.error(f"Err setting level for '{name}': {e}")
+    if not module_levels_dict:
+        return
+    root_logger = logging.getLogger(ARES_LOGGER_NAME)
+    root_logger.debug(f"Applying module levels: {module_levels_dict}")
+
+    for name, lvl_str in module_levels_dict.items():
+        try:
+            mod_log = logging.getLogger(name)
+            lvl = getattr(logging, lvl_str.upper(), None)
+
+            if lvl is not None:
+                mod_log.setLevel(lvl)
+                root_logger.info(f"Set level for '{name}' to {lvl_str.upper()}")
+            else:
+                root_logger.warning(f"Invalid level '{lvl_str}' for logger '{name}'.")
+        except Exception as e:
+            root_logger.error(f"Err setting level for '{name}': {e}")
 def get_logger(name=None): return logging.getLogger(f"{ARES_LOGGER_NAME}.{name}") if name else logging.getLogger(ARES_LOGGER_NAME)
 if not logging.getLogger(ARES_LOGGER_NAME).hasHandlers(): _h=logging.StreamHandler(sys.stdout); _f=logging.Formatter('%(asctime)s-%(name)s-%(levelname)s-%(message)s'); _h.setFormatter(_f); logging.getLogger(ARES_LOGGER_NAME).addHandler(_h); logging.getLogger(ARES_LOGGER_NAME).setLevel(logging.WARNING)

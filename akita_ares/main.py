@@ -1,7 +1,7 @@
 
 import time, os, signal, sys, logging, threading # Added threading
 from .core.config_manager import ConfigManager
-from .core.logger import setup_logging, get_logger, update_module_log_levels
+from .core.logger import setup_logging, get_logger, update_module_log_levels, ARES_LOGGER_NAME
 from .features import request_retries, path_selection, proxying, monitoring
 from .cli.main_cli import parse_args
 
@@ -25,7 +25,7 @@ class ARESApp:
         config_specified_schema_path = None
         if not self.cli_args_schema_path:
             try:
-                peek_manager = ConfigManager(effective_config_path, schema_file_path=None, validate_on_load=False)
+                peek_manager = ConfigManager(effective_config_path, schema_fp=None, validate_on_load=False)
                 config_specified_schema_path = peek_manager.get_section('ares_core').get('config_schema_path')
             except Exception as e: print(f"Warning: Could not pre-load config '{effective_config_path}': {e}", file=sys.stderr)
         effective_schema_path = self.cli_args_schema_path or config_specified_schema_path or DEFAULT_SCHEMA_PATH

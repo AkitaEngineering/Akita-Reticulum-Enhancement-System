@@ -1,4 +1,4 @@
-from prometheus_client import start_http_server, Gauge, Counter, Histogram, REGISTRY
+from prometheus_client import start_http_server, Gauge, Counter, Histogram, REGISTRY, generate_latest
 import threading
 from akita_ares.core.logger import get_logger
 class MetricsMonitor:
@@ -15,7 +15,13 @@ class MetricsMonitor:
         self.logger.info(f"MetricsMonitor cfg: Port {self.port}, Prefix '{self.prefix}', HealthEP: {self.enable_health_endpoint}")
     def _initialize_metrics(self):
         self.logger.debug(f"Init Prometheus metrics with prefix: {self.prefix}"); registry = self.custom_registry
-        def _reg(m_cls, name, *a, **kw): name=f'{self.prefix}_{name}'; try: return m_cls(name,*a,registry=registry,**kw) except ValueError: self.logger.warning(f"Metric {name} already registered."); return registry._names_to_collectors.get(name)
+        def _reg(m_cls, name, *a, **kw):
+            name = f'{self.prefix}_{name}'
+            try:
+                return m_cls(name, *a, registry=registry, **kw)
+            except ValueError:
+                self.logger.warning(f"Metric {name} already registered.")
+                return registry._names_to_collectors.get(name)
         from akita_ares import VERSION
         self.ares_info = _reg(Gauge,'info','Info about ARES instance',['version']); self.ares_info.labels(version=VERSION).set(1) if self.ares_info else None
         self.active_features = _reg(Gauge,'active_features_count','Num active ARES features')
@@ -34,14 +40,35 @@ class MetricsMonitor:
         if self.running: self.logger.warning("Prometheus HTTP server already running."); return
         try:
             if not self.metrics_initialized: self._initialize_metrics(); self.metrics_initialized=True
-            self._http_server_thread = threading.Thread(target=start_http_server,args=(self.port, '', self.custom_registry),daemon=True,name="PrometheusServerThread")
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            class HealthHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == '/health':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'text/plain')
+                        self.end_headers()
+                        self.wfile.write(b'OK')
+                    elif self.path == '/metrics':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'text/plain; charset=utf-8')
+                        self.end_headers()
+                        self.wfile.write(generate_latest(self.custom_registry))
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+            self._http_server = HTTPServer(('', self.port), HealthHandler)
+            self._http_server_thread = threading.Thread(target=self._http_server.serve_forever, daemon=True, name="PrometheusHealthServerThread")
             self._http_server_thread.start(); self.running=True
-            self.logger.info(f"Prometheus metrics server started on port {self.port}. Health endpoint {'enabled (conceptual)' if self.enable_health_endpoint else 'disabled'}.")
-            if self.enable_health_endpoint: self.logger.warning("Health endpoint requires custom HTTP server setup (not implemented).")
-        except Exception as e: self.logger.error(f"Failed to start Prometheus server on port {self.port}: {e}"); self.running=False
+            self.logger.info(f"Prometheus/health server started on port {self.port}. Health endpoint at /health, metrics at /metrics.")
+        except Exception as e: self.logger.error(f"Failed to start server on port {self.port}: {e}"); self.running=False
     def stop(self):
-        if self.running: self.logger.info("Prometheus server stopping (daemon thread exits with app)."); self.running=False
-        else: self.logger.debug("Prometheus server not running or already stopped.")
+        if self.running:
+            self.logger.info("Prometheus/health server stopping...")
+            if hasattr(self, '_http_server'):
+                self._http_server.shutdown()
+            self.running = False
+        else:
+            self.logger.debug("Server not running or already stopped.")
     def increment_retry_attempt(self, op_name, success=False): pass # Deprecated
     def record_operation_duration(self, op_name, dur_s): self.retry_operation_duration_seconds.labels(op_name).observe(dur_s) if self.retry_operation_duration_seconds else None
     def update_retry_stats(self, op_name, success, required_retries):
