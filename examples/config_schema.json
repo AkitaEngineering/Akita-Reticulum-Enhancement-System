@@ -77,6 +77,7 @@
                 "is_proxy_node": {"type": "boolean"},
                 "listen_on_aspect": {"type": "string"},
                 "max_payload_size_bytes": {"type": "integer", "minimum": 1},
+                "default_request_timeout_seconds": {"type": "number", "minimum": 0.001},
                 "proxy_protocol_version": {"type": "string"}
             },
             "additionalProperties": false

@@ -32,6 +32,10 @@ class MetricsMonitor:
         self.retry_failures_total = _reg(Counter,'retry_failures_total','Total failures after all retries',['operation_name'])
         self.retry_operation_duration_seconds = _reg(Histogram,'retry_operation_duration_seconds','Op duration hist with retries',['operation_name'])
         self.proxied_packets_total = _reg(Counter,'proxied_packets_total','Total proxied packets',['proxy_alias','direction'])
+        self.proxy_request_outcomes_total = _reg(Counter,'proxy_request_outcomes_total','Total proxy request outcomes',['proxy_alias','mode','outcome'])
+        self.proxy_request_duration_seconds = _reg(Histogram,'proxy_request_duration_seconds','Proxy request duration seconds',['proxy_alias','mode','outcome'])
+        self.proxy_request_phase_duration_seconds = _reg(Histogram,'proxy_request_phase_duration_seconds','Proxy request phase duration seconds',['proxy_alias','mode','phase','outcome'])
+        self.proxy_policy_denials_total = _reg(Counter,'proxy_policy_denials_total','Total proxy route policy denials',['proxy_alias','reason'])
         self.active_proxy_routes = _reg(Gauge,'active_proxy_routes_count','Num active client proxy routes')
         self.active_proxy_clients = _reg(Gauge,'active_proxy_clients_count','Num active clients on this proxy node')
         self.path_selection_evaluations_total = _reg(Counter,'path_selection_evaluations_total','Total path selection evals')
@@ -101,6 +105,10 @@ class MetricsMonitor:
         else:
             if self.retry_failures_total: self.retry_failures_total.labels(op_name).inc()
     def increment_proxied_packets(self, proxy_alias, direction='sent_to_proxy'): self.proxied_packets_total.labels(proxy_alias,direction).inc() if self.proxied_packets_total else None
+    def increment_proxy_request_outcome(self, proxy_alias, mode, outcome): self.proxy_request_outcomes_total.labels(proxy_alias,mode,outcome).inc() if self.proxy_request_outcomes_total else None
+    def record_proxy_request_duration(self, proxy_alias, mode, outcome, dur_s): self.proxy_request_duration_seconds.labels(proxy_alias,mode,outcome).observe(dur_s) if self.proxy_request_duration_seconds else None
+    def record_proxy_request_phase_duration(self, proxy_alias, mode, phase, outcome, dur_s): self.proxy_request_phase_duration_seconds.labels(proxy_alias,mode,phase,outcome).observe(dur_s) if self.proxy_request_phase_duration_seconds else None
+    def increment_proxy_policy_denial(self, proxy_alias, reason): self.proxy_policy_denials_total.labels(proxy_alias,reason).inc() if self.proxy_policy_denials_total else None
     def set_active_features_count(self, count): self.active_features.set(count) if self.active_features else None
     def set_active_proxy_routes_count(self, count): self.active_proxy_routes.set(count) if self.active_proxy_routes else None
     def set_active_proxy_clients_count(self, count): self.active_proxy_clients.set(count) if self.active_proxy_clients else None

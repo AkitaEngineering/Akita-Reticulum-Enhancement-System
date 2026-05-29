@@ -47,6 +47,7 @@
         "is_proxy_node": false,
         "listen_on_aspect": "proxy_service",
         "max_payload_size_bytes": 1048576,
+        "default_request_timeout_seconds": 15,
         "proxy_protocol_version": "1.0"
     },
     "monitoring": {
