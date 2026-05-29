@@ -2,6 +2,33 @@ import argparse, os, sys, json
 from akita_ares import VERSION 
 DEFAULT_CONFIG_PATH_CLI = os.path.join(os.path.dirname(__file__),"..","..","examples","sample_config.json")
 DEFAULT_SCHEMA_PATH_CLI = os.path.join(os.path.dirname(__file__),"..","..","examples","config_schema.json")
+
+def _resolve_schema_path(args, cfg_path):
+    schema_path = args.schema
+    pre_conf = {}
+    if not schema_path:
+        try:
+            if os.path.exists(cfg_path):
+                with open(cfg_path,'r', encoding='utf-8') as f:
+                    pre_conf=json.load(f)
+            schema_path=pre_conf.get('ares_core',{}).get('config_schema_path')
+        except Exception:
+            pre_conf = {}
+    if not schema_path:
+        schema_path=DEFAULT_SCHEMA_PATH_CLI
+    if not os.path.isabs(schema_path) and '~' not in schema_path:
+         if args.schema: pass 
+         elif pre_conf.get('ares_core',{}).get('config_schema_path'): schema_path=os.path.join(os.path.dirname(cfg_path),schema_path)
+         else: schema_path=DEFAULT_SCHEMA_PATH_CLI
+    return schema_path
+
+def _rns_available():
+    try:
+        import RNS  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="ARES", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
@@ -16,25 +43,21 @@ def parse_args(args=None):
     status_parser = subparsers.add_parser('status', help="Show ARES status (NI).")
     status_parser.set_defaults(func=handle_status_command)
     args_list = args if args is not None else sys.argv[1:]
-    if not any(cmd in args_list for cmd in subparsers.choices): args_list.insert(0,'start')
-    parsed_args = parser.parse_args(args_list)
+    parsed_args, remaining = parser.parse_known_args(args_list)
+    if parsed_args.command is None:
+        parsed_args.command = 'start'
+        parsed_args.func = handle_start_command
+        if remaining:
+            parser.error(f"unrecognized arguments: {' '.join(remaining)}")
+        return parsed_args
+    if remaining:
+        parser.error(f"unrecognized arguments: {' '.join(remaining)}")
     return parsed_args
 def handle_start_command(args, app_class): print(f"CLI: Preparing to start ARES...") 
 def handle_configtest_command(args, app_class):
     from akita_ares.core.config_manager import ConfigManager; from akita_ares.core.logger import setup_logging, get_logger; import jsonschema
     setup_logging(level=args.loglevel or 'INFO', console_output=True, log_file=None); logger = get_logger("ConfigTest"); logger.info("Performing config test...")
-    cfg_path = args.config or DEFAULT_CONFIG_PATH_CLI; schema_path = args.schema; pre_conf={}
-    if not schema_path:
-        try:
-            if os.path.exists(cfg_path):
-                with open(cfg_path,'r') as f: pre_conf=json.load(f)
-                schema_path=pre_conf.get('ares_core',{}).get('config_schema_path')
-        except Exception: pass
-        if not schema_path: schema_path=DEFAULT_SCHEMA_PATH_CLI
-    if not os.path.isabs(schema_path) and '~' not in schema_path:
-         if args.schema: pass 
-         elif pre_conf.get('ares_core',{}).get('config_schema_path'): schema_path=os.path.join(os.path.dirname(cfg_path),schema_path)
-         else: schema_path=DEFAULT_SCHEMA_PATH_CLI
+    cfg_path = args.config or DEFAULT_CONFIG_PATH_CLI; schema_path = _resolve_schema_path(args, cfg_path)
     logger.info(f"Testing config file: {os.path.abspath(cfg_path)}")
     if schema_path and os.path.exists(os.path.expanduser(schema_path)): logger.info(f"Using schema: {os.path.abspath(os.path.expanduser(schema_path))}")
     elif schema_path: logger.warning(f"Schema file not found: {os.path.expanduser(schema_path)}.")
@@ -48,7 +71,39 @@ def handle_configtest_command(args, app_class):
         sys.exit(0)
     except jsonschema.exceptions.ValidationError as e: logger.error(f"Config validation FAILED: {e.message} path {list(e.path)}"); sys.exit(1)
     except Exception as e: logger.error(f"Config test FAILED: {e}"); sys.exit(1)
-def handle_status_command(args, app_class): print("CLI: 'status' command recognized (Not Implemented).")
+def handle_status_command(args, app_class):
+    from akita_ares.core.config_manager import ConfigManager
+
+    cfg_path = args.config or DEFAULT_CONFIG_PATH_CLI
+    schema_path = _resolve_schema_path(args, cfg_path)
+
+    try:
+        manager = ConfigManager(config_fp=cfg_path, schema_fp=schema_path)
+    except Exception as e:
+        print(json.dumps({"status": "error", "message": str(e)}, indent=2))
+        sys.exit(1)
+
+    config = manager.get_config()
+    proxy_config = config.get('destination_proxying', {})
+    status = {
+        "status": "ok",
+        "config_path": os.path.abspath(cfg_path),
+        "schema_path": os.path.abspath(os.path.expanduser(schema_path)) if schema_path else None,
+        "rns_available": _rns_available(),
+        "features": {
+            "monitoring": bool(config.get('monitoring', {}).get('enabled', True)),
+            "request_retries": bool(config.get('request_retries', {}).get('enabled', False)),
+            "path_selection": bool(config.get('path_selection', {}).get('enabled', False)),
+            "destination_proxying": bool(proxy_config.get('enabled', False)),
+        },
+        "monitoring": {
+            "listen_host": config.get('monitoring', {}).get('listen_host', '127.0.0.1'),
+            "prometheus_port": config.get('monitoring', {}).get('prometheus_port', 9876),
+        },
+        "proxy_mode": "node" if proxy_config.get('enabled', False) and proxy_config.get('is_proxy_node', False) else "client" if proxy_config.get('enabled', False) else "disabled",
+    }
+    print(json.dumps(status, indent=2, sort_keys=True))
+    sys.exit(0)
 if __name__ == "__main__":
     print("Testing CLI parsing (run 'python -m akita_ares.main' to start app)..."); test_args = parse_args() 
     print(f"Parsed arguments: {test_args}"); print(f"Function to call: {test_args.func.__name__}") if hasattr(test_args,'func') else print("Default command logic handled by caller.")

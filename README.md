@@ -1,129 +1,100 @@
 # Akita Reticulum Enhancement System (ARES)
 
-**Organization:** Akita Engineering
-**Website:** www.akitaengineering.com
-**License:** GPLv3
-**Version:** 0.1.5-alpha
+ARES is a Python service and CLI for operational hardening around the Reticulum Network Stack (RNS). It adds resilience, observability, and safer runtime defaults for applications that depend on RNS.
 
-## Overview
+## Operational Surface
 
-The Akita Reticulum Enhancement System (ARES) is designed to elevate the Reticulum network stack by providing robust, modular, and feature-rich enhancements. This system aims to improve the resilience, performance, observability, and overall capabilities of applications built on Reticulum.
+ARES does not ship a graphical frontend. The production-facing interfaces are:
 
-ARES is built with a modular architecture, allowing features to be developed, integrated, and maintained independently.
+- CLI commands: `start`, `configtest`, `status`
+- JSON configuration with JSON Schema validation
+- HTTP monitoring endpoints: `/metrics` and `/health`
 
-## Core Goals
+## Features
 
-* **Enhance Robustness:** Implement features like advanced request retries and circuit breakers.
-* **Improve Performance:** Introduce intelligent mechanisms like metric-based path selection.
-* **Increase Capabilities:** Add functionalities such as globally routable multicast and destination proxying.
-* **Simplify Management:** Provide comprehensive configuration, centralized logging, and a CLI.
-* **Ensure Reliability:** Through comprehensive error handling and thorough testing.
+- Circuit breaker protection for repeated failures.
+- Configurable request retries with backoff and jitter.
+- Metric-based path selection with Prometheus instrumentation.
+- Destination proxying with route validation and payload size limits.
+- Centralized logging with rotation and per-module log levels.
+- Prometheus metrics and a basic health endpoint.
 
-## Features (Planned & In Development)
+## Current Proxying Scope
 
-* **Robust Request Retries:**
-    * Automatic retry mechanism for `Reticulum.request()` calls.
-    * Configurable retry parameters (retries, delay, jitter).
-    * Detailed logging of retry attempts and failures.
-    * Metrics for retry attempts, successes, failures, and duration.
-* **Metric-Based Path Selection:**
-    * Intelligent routing decisions based on network metrics (e.g., RTT, hop count, link quality).
-    * Dynamic path selection to optimize network performance.
-    * Support for custom metric evaluation modules.
-    * Metrics for path selection events and chosen path quality.
-# Akita Reticulum Enhancement System (ARES)
+Destination proxying currently supports one-way forwarding to known RNS destinations.
 
-**Organization:** Akita Engineering
-**Website:** https://www.akitaengineering.com
-**License:** MIT
-**Version:** 0.1.6
+- Clients must provide both the target destination hash and the full target destination name.
+- Proxy payload size is limited by `destination_proxying.max_payload_size_bytes`.
+- Response proxying is not supported by the current RNS integration and will fail explicitly.
+- Unknown destinations fail closed after a path request is triggered.
 
-Overview
---------
+## Quickstart
 
-ARES (Akita Reticulum Enhancement System) provides modular enhancements to the Reticulum (RNS) network stack. It focuses on improving resilience, observability, and operational behavior for applications using RNS.
-
-Status
-------
-
-- Core modules implemented and unit tested.
-- Current test coverage: all unit tests pass locally (29 tests).
-
-Key Features
-------------
-
-- Robust request retries with configurable backoff and jitter.
-- Circuit breaker implementation for isolating failing operations.
-- Metric-based path selection (RTT / hops / custom metrics).
-- Destination proxying support (client and proxy node logic).
-- Prometheus metrics with a simple `/metrics` and `/health` endpoint.
-- JSON-based configuration with optional JSON Schema validation.
-
-Project Layout
---------------
-
-- `akita_ares/` - package source
-  - `core/` - config, logging, utilities
-  - `features/` - pluggable features (monitoring, proxying, path selection, retries)
-  - `cli/` - command line interface
-  - `main.py` - application orchestration
-- `tests/` - unit tests (run with `pytest`)
-- `examples/` - example config and schema files
-
-Quickstart
-----------
-
-1. Create and activate a virtual environment:
+1. Create and activate a virtual environment.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate   # on Windows: .venv\Scripts\Activate.ps1
+source .venv/bin/activate
 ```
 
-2. Install dependencies:
+2. Install dependencies.
 
 ```bash
-pip install -r requirements.txt
-pip install pytest
+python -m pip install -U pip
+python -m pip install -r requirements.txt pytest
 ```
 
-3. Copy and adjust configuration:
+3. Validate the bundled example configuration.
 
 ```bash
-cp examples/sample_config.json ~/.ares_config.json
-# edit the file as needed
+python -m akita_ares.main --config examples/sample_config.json configtest
 ```
 
-4. Run tests:
+4. Inspect the effective runtime status.
+
+```bash
+python -m akita_ares.main --config examples/sample_config.json status
+```
+
+5. Start ARES.
+
+```bash
+python -m akita_ares.main --config /path/to/config.json --loglevel INFO
+```
+
+## Security Notes
+
+- RNS handles transport-layer confidentiality and authentication for encrypted destination types. ARES relies on RNS for network encryption rather than layering custom crypto on top.
+- The monitoring server is plain HTTP and binds to `127.0.0.1` by default. If you need remote access, place it behind TLS and authentication.
+- Keep configuration and log files in directories with restricted filesystem permissions.
+- The bundled sample config validates against the bundled schema and is intended to be a safe production starting point.
+
+## Configuration Highlights
+
+- `monitoring.listen_host`: defaults to `127.0.0.1`.
+- `monitoring.prometheus_port`: Prometheus and health endpoint port.
+- `destination_proxying.max_payload_size_bytes`: upper bound for proxied payloads.
+- `destination_proxying.proxy_routes[].entry_destination_name`: outbound proxy service destination name.
+- `ares_core.config_schema_path`: bundled schema path or a custom schema override.
+- `ares_core.rns_config_path`: the sample config defaults to `~/.ares-reticulum` so it does not inherit machine-specific Reticulum interfaces.
+
+## Testing
+
+Run the full suite with:
 
 ```bash
 python -m pytest -q
 ```
 
-5. Run the CLI (start is default):
+## Project Layout
 
-```bash
-python -m akita_ares.cli.main_cli --config /path/to/config.json --loglevel INFO
-```
+- `akita_ares/`: package source
+- `akita_ares/core/`: config, logging, circuit breaker
+- `akita_ares/features/`: monitoring, proxying, path selection, retries
+- `akita_ares/cli/`: command-line interface
+- `examples/`: validated sample configuration and schema
+- `tests/`: unit and regression tests
 
-Notes
------
+## License
 
-- RNS (Reticulum) is optional for running unit tests; features that require RNS have fallbacks and will log warnings when RNS is not present.
-- The package uses a small built-in HTTP server to expose Prometheus metrics and a `/health` endpoint.
-
-Contributing
-------------
-
-Contributions, bug reports, and PRs are welcome. Please follow the standard GitHub workflow: fork, branch, commit with clear messages, and open a PR against `main`.
-
-License
--------
-
-This project is licensed under the MIT License — see the `LICENSE` file for details.
-
-Contact
--------
-
-For questions, reach out to the Akita Engineering team via the project repository.
-
+This project is licensed under the MIT License. See `LICENSE` for the full text.

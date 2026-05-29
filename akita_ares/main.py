@@ -3,7 +3,7 @@ import time, os, signal, sys, logging, threading # Added threading
 from .core.config_manager import ConfigManager
 from .core.logger import setup_logging, get_logger, update_module_log_levels, ARES_LOGGER_NAME
 from .features import request_retries, path_selection, proxying, monitoring
-from .cli.main_cli import parse_args
+from .cli.main_cli import parse_args, handle_start_command
 
 # Attempt to import RNS
 try:
@@ -38,7 +38,7 @@ class ARESApp:
         setup_logging(level=effective_log_level, log_file=log_config.get('file', 'ares.log'), max_bytes=log_config.get('max_bytes', 10*1024*1024), backup_count=log_config.get('backup_count', 5), console_output=log_config.get('console_output', True), module_levels=log_config.get('module_levels'))
         self.logger = get_logger("ARESApp")
         self.logger.info(f"ARES Version {self.__get_version()} initializing...")
-        self.logger.info(f"Using config: {self.config_manager.config_file_path}")
+        self.logger.info(f"Using config: {self.config_manager.config_fp}")
         if self.config_manager.schema_path and os.path.exists(self.config_manager.schema_path): self.logger.info(f"Using schema: {self.config_manager.schema_path}")
         elif self.config_manager.schema_path: self.logger.warning(f"Schema not found: {self.config_manager.schema_path}. Validation skipped.")
         if cli_log_level: self.logger.info(f"Log level overridden by CLI to: {cli_log_level}")
@@ -56,7 +56,12 @@ class ARESApp:
         self._initialize_features(); self._setup_signal_handlers()
         self.logger.info("ARES initialization complete.")
 
-    def __get_version(self): try: from . import VERSION; return VERSION; except ImportError: return "unknown"
+    def __get_version(self):
+        try:
+            from . import VERSION
+            return VERSION
+        except ImportError:
+            return "unknown"
 
     def _initialize_rns(self):
         """ Initializes the Reticulum instance. """
@@ -77,7 +82,7 @@ class ARESApp:
 
             # Initialize Reticulum. This might block if interfaces take time.
             # Consider running this in a separate thread if it blocks too long.
-            rns_instance = RNS.Reticulum(configdir=expanded_rns_config_path, log_level=logging.WARNING) # Use a quieter log level for RNS itself?
+            rns_instance = RNS.Reticulum(configdir=expanded_rns_config_path, loglevel=logging.WARNING) # Use a quieter log level for RNS itself?
 
             # Check if transport is enabled if ARES needs it (e.g., for proxy node)
             ares_needs_transport = self.config.get('destination_proxying',{}).get('is_proxy_node', False) # Example check
@@ -178,7 +183,11 @@ class ARESApp:
 
 def main_entry():
     args = parse_args()
-    if hasattr(args, 'func') and args.command != 'start': args.func(args, ARESApp)
-    else: handle_start_command(args, ARESApp); app = ARESApp(args=args); app.run()
+    if hasattr(args, 'func'):
+        args.func(args, ARESApp)
+    if args.command != 'start':
+        return
+    app = ARESApp(args=args)
+    app.run()
 
 if __name__ == "__main__": main_entry()

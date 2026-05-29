@@ -11,7 +11,7 @@
         }
     },
     "ares_core": {
-        "rns_config_path": "~/.reticulum",
+        "rns_config_path": "~/.ares-reticulum",
         "enable_transport_node_features": false,
         "config_schema_path": "config_schema.json",
         "main_loop_sleep_interval": 30
@@ -42,22 +42,17 @@
                 "target_network_prefix": "app_name.service_behind_firewall",
                 "allow_all_targets": false,
                 "allowed_target_aspects": ["data_service", "control_service"]
-            },
-            {
-                "alias": "invalid_hash_route",
-                "entry_destination_name": "ares.proxy.entry.invalid",
-                "exit_node_identity_hash": "invalid-hash-format",
-                "target_network_prefix": "test.service",
-                "allow_all_targets": true
             }
         ],
         "is_proxy_node": false,
         "listen_on_aspect": "proxy_service",
+        "max_payload_size_bytes": 1048576,
         "proxy_protocol_version": "1.0"
     },
     "monitoring": {
         "enabled": true,
         "prometheus_port": 9876,
+        "listen_host": "127.0.0.1",
         "metrics_prefix": "ares",
         "enable_health_endpoint": true
     }

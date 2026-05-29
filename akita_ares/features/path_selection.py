@@ -78,7 +78,7 @@ class PathSelector:
         if not evaluated: self.logger.warning(f"No paths evaluated for {dest_hash_hex[:8]}."); return None
         evaluated.sort(key=lambda x:x['metric_value']); best=evaluated[0]
         self.logger.info(f"Best path for {dest_hash_hex[:8]} via {getattr(best['path_info'],'path_id','N/A')} with {self.default_metric_type}={best['metric_value']:.4f}")
-        if self.metrics_monitor: self.metrics_monitor.path_selection_evaluations_total.inc(); self.metrics_monitor.path_selection_chosen_metric_value.labels(dest_hash=dest_hash_hex,metric_type=self.default_metric_type).set(best['metric_value'] if best['metric_value']!=float('inf') else -1)
+        if self.metrics_monitor: self.metrics_monitor.path_selection_evaluations_total.inc(); self.metrics_monitor.path_selection_chosen_metric_value.labels(destination_hash=dest_hash_hex,metric_type=self.default_metric_type).set(best['metric_value'] if best['metric_value']!=float('inf') else -1)
         return best['path_info']
     def periodic_update(self):
         now = time.time()

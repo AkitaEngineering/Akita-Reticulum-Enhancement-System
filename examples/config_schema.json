@@ -65,7 +65,7 @@
                         "properties": {
                             "alias": {"type": "string"},
                             "entry_destination_name": {"type": "string"},
-                            "exit_node_identity_hash": {"type": "string", "pattern": "^[a-f0-9]{32}$"}, # Reticulum hashes are 16 bytes (32 hex chars)
+                            "exit_node_identity_hash": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
                             "target_network_prefix": {"type": "string"},
                             "allow_all_targets": {"type": "boolean"},
                             "allowed_target_aspects": {"type": "array", "items": {"type": "string"}}
@@ -76,6 +76,7 @@
                 },
                 "is_proxy_node": {"type": "boolean"},
                 "listen_on_aspect": {"type": "string"},
+                "max_payload_size_bytes": {"type": "integer", "minimum": 1},
                 "proxy_protocol_version": {"type": "string"}
             },
             "additionalProperties": false
@@ -85,6 +86,7 @@
             "properties": {
                 "enabled": {"type": "boolean"},
                 "prometheus_port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+                "listen_host": {"type": "string"},
                 "metrics_prefix": {"type": "string"},
                 "enable_health_endpoint": {"type": "boolean"}
             },

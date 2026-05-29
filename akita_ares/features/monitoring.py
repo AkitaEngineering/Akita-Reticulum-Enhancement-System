@@ -1,4 +1,4 @@
-from prometheus_client import start_http_server, Gauge, Counter, Histogram, REGISTRY, generate_latest
+from prometheus_client import Gauge, Counter, Histogram, REGISTRY, generate_latest
 import threading
 from akita_ares.core.logger import get_logger
 class MetricsMonitor:
@@ -8,11 +8,12 @@ class MetricsMonitor:
         self.update_config(config)
     def update_config(self, config):
         self.config = config; new_port = config.get('prometheus_port',9876); new_prefix = config.get('metrics_prefix','ares')
+        self.listen_host = config.get('listen_host', '127.0.0.1')
         self.enable_health_endpoint = config.get('enable_health_endpoint', True) 
         if hasattr(self,'port') and (self.port!=new_port or self.prefix!=new_prefix) and self.running: self.logger.warning(f"Prometheus port/prefix changed. Restart ARES for full effect.")
         self.port = new_port; self.prefix = new_prefix
         if not self.metrics_initialized: self._initialize_metrics(); self.metrics_initialized = True
-        self.logger.info(f"MetricsMonitor cfg: Port {self.port}, Prefix '{self.prefix}', HealthEP: {self.enable_health_endpoint}")
+        self.logger.info(f"MetricsMonitor cfg: Host {self.listen_host}, Port {self.port}, Prefix '{self.prefix}', HealthEP: {self.enable_health_endpoint}")
     def _initialize_metrics(self):
         self.logger.debug(f"Init Prometheus metrics with prefix: {self.prefix}"); registry = self.custom_registry
         def _reg(m_cls, name, *a, **kw):
@@ -40,32 +41,53 @@ class MetricsMonitor:
         if self.running: self.logger.warning("Prometheus HTTP server already running."); return
         try:
             if not self.metrics_initialized: self._initialize_metrics(); self.metrics_initialized=True
-            from http.server import HTTPServer, BaseHTTPRequestHandler
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            registry = self.custom_registry
+            enable_health_endpoint = self.enable_health_endpoint
+            logger = self.logger
+
+            class _MetricsHTTPServer(ThreadingHTTPServer):
+                daemon_threads = True
+                allow_reuse_address = True
+
             class HealthHandler(BaseHTTPRequestHandler):
                 def do_GET(self):
                     if self.path == '/health':
+                        if not enable_health_endpoint:
+                            self.send_response(404)
+                            self.end_headers()
+                            return
                         self.send_response(200)
                         self.send_header('Content-type', 'text/plain')
                         self.end_headers()
                         self.wfile.write(b'OK')
                     elif self.path == '/metrics':
+                        payload = generate_latest(registry)
                         self.send_response(200)
-                        self.send_header('Content-type', 'text/plain; charset=utf-8')
+                        self.send_header('Content-type', 'text/plain; version=0.0.4; charset=utf-8')
+                        self.send_header('Content-Length', str(len(payload)))
                         self.end_headers()
-                        self.wfile.write(generate_latest(self.custom_registry))
+                        self.wfile.write(payload)
                     else:
                         self.send_response(404)
                         self.end_headers()
-            self._http_server = HTTPServer(('', self.port), HealthHandler)
+
+                def log_message(self, format, *args):
+                    logger.debug("Metrics HTTP %s - %s", self.address_string(), format % args)
+
+            self._http_server = _MetricsHTTPServer((self.listen_host, self.port), HealthHandler)
             self._http_server_thread = threading.Thread(target=self._http_server.serve_forever, daemon=True, name="PrometheusHealthServerThread")
             self._http_server_thread.start(); self.running=True
-            self.logger.info(f"Prometheus/health server started on port {self.port}. Health endpoint at /health, metrics at /metrics.")
+            self.logger.info(f"Prometheus/health server started on {self.listen_host}:{self.port}. Health endpoint at /health, metrics at /metrics.")
         except Exception as e: self.logger.error(f"Failed to start server on port {self.port}: {e}"); self.running=False
     def stop(self):
         if self.running:
             self.logger.info("Prometheus/health server stopping...")
             if hasattr(self, '_http_server'):
                 self._http_server.shutdown()
+                self._http_server.server_close()
+            if self._http_server_thread and self._http_server_thread.is_alive():
+                self._http_server_thread.join(timeout=2)
             self.running = False
         else:
             self.logger.debug("Server not running or already stopped.")

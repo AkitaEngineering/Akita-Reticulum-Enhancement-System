@@ -5,21 +5,25 @@ logger = get_logger("ConfigManager")
 class ConfigManager:
     def __init__(self, config_fp, schema_fp=None, validate_on_load=True):
         self.config_fp=os.path.expanduser(config_fp); self.schema_path=os.path.expanduser(schema_fp) if schema_fp else None
-        self.config={}; self.schema=None; self.validate_on_load=validate_on_load
-        if self.schema_path and os.path.exists(self.schema_path): self._load_schema()
+        self.config={}; self.schema=None; self.validate_on_load=validate_on_load; self.schema_load_error = None
+        if self.schema_path and os.path.exists(self.schema_path):
+            self._load_schema()
+            if self.schema is None and self.schema_load_error is not None:
+                raise ValueError(f"Failed to load schema '{self.schema_path}': {self.schema_load_error}") from self.schema_load_error
         self.load_config()
     def _load_schema(self):
         logger.debug(f"Loading schema: {self.schema_path}")
         try:
-            with open(self.schema_path,'r') as f: self.schema=json.load(f)
+            with open(self.schema_path,'r', encoding='utf-8') as f: self.schema=json.load(f)
+            self.schema_load_error = None
             logger.info(f"Schema loaded: {self.schema_path}")
-        except Exception as e: logger.error(f"Err loading schema {self.schema_path}: {e}"); self.schema=None
+        except Exception as e: logger.error(f"Err loading schema {self.schema_path}: {e}"); self.schema=None; self.schema_load_error = e
     def load_config(self):
         logger.debug(f"Loading config: {self.config_fp}")
         tmp_cfg={}
         try:
             if not os.path.exists(self.config_fp): logger.error(f"Config file not found: {self.config_fp}"); self.config={}; return
-            with open(self.config_fp,'r') as f: tmp_cfg=json.load(f)
+            with open(self.config_fp,'r', encoding='utf-8') as f: tmp_cfg=json.load(f)
             if self.schema and self.validate_on_load: self.validate_config_schema(tmp_cfg)
             self.config=tmp_cfg; logger.info(f"Config loaded: {self.config_fp}")
         except json.JSONDecodeError as e: logger.error(f"JSON decode err in {self.config_fp}: {e}"); self._handle_load_fail()

@@ -25,6 +25,12 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(manager.get_config(), {})
 
     def test_load_config_missing_schema_file(self): missing_schema_path = os.path.join(self.temp_dir.name, 'nonexistent_schema.json'); manager = ConfigManager(self.config_path, schema_fp=missing_schema_path); self.assertEqual(manager.get_config(), self.valid_config_data); self.assertIsNone(manager.schema)
+    def test_invalid_schema_file_raises(self):
+        invalid_schema_path = os.path.join(self.temp_dir.name, 'invalid_schema.json')
+        with open(invalid_schema_path, 'w') as f:
+            f.write('{invalid schema')
+        with self.assertRaises(ValueError):
+            ConfigManager(self.config_path, schema_fp=invalid_schema_path)
     def test_get_section(self): manager = ConfigManager(self.config_path); self.assertEqual(manager.get_section("logging"), self.valid_config_data["logging"]); self.assertEqual(manager.get_section("ares_core"), self.valid_config_data["ares_core"]); self.assertEqual(manager.get_section("nonexistent"), {}); self.assertEqual(manager.get_section("nonexistent", default="default_val"), "default_val")
     def test_reload_config(self):
         manager = ConfigManager(self.config_path, schema_fp=self.schema_path)

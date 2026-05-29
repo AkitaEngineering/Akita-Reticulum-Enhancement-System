@@ -12,7 +12,10 @@ class RetryManager:
     def _calc_delay(self, att, base_d, back_f, jit_max): delay=base_d*(back_f**(att-1)); delay=max(0,delay+random.uniform(-jit_max,jit_max)) if jit_max>0 else delay; return delay
     def exec_w_retry(self, op_func, *args, max_r=None,delay_s=None,back_f=None,jit_max_s=None,retry_ex=None,op_name="UnnamedOp",**kwargs):
         self.stats['total_executions'] += 1; required_retries = 0
-        _mr,_d,_b,_j = max_r or self.default_max_retries,delay_s or self.default_delay_seconds,back_f or self.default_backoff_factor,jit_max_s or self.default_jitter_max_seconds
+        _mr = self.default_max_retries if max_r is None else max_r
+        _d = self.default_delay_seconds if delay_s is None else delay_s
+        _b = self.default_backoff_factor if back_f is None else back_f
+        _j = self.default_jitter_max_seconds if jit_max_s is None else jit_max_s
         _rx = retry_ex or RNS_RETRYABLE_EXCEPTIONS
         if not isinstance(_rx,tuple): self.logger.error("retryable_exceptions must be tuple"); _rx=(Exception,)
         last_ex,start_t = None,time.monotonic()

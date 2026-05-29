@@ -1,0 +1,17 @@
+2026-05-29 17:30:09,398-ARES.ARESApp-CRITICAL-main:98-Failed to initialize Reticulum: Reticulum.__init__() got an unexpected keyword argument 'log_level'. Did you mean 'loglevel'?
+Traceback (most recent call last):
+  File "/run/media/shaun/DATA/code/Akita-Reticulum-Enhancement-System/akita_ares/main.py", line 85, in _initialize_rns
+    rns_instance = RNS.Reticulum(configdir=expanded_rns_config_path, log_level=logging.WARNING) # Use a quieter log level for RNS itself?
+TypeError: Reticulum.__init__() got an unexpected keyword argument 'log_level'. Did you mean 'loglevel'?
+2026-05-29 17:30:09,399-ARES.ARESApp-CRITICAL-main:49-RNS initialization failed. Exiting.
+2026-05-29 17:30:42,346-ARES.Feature.PathSelector-INFO-path_selection:22-PathSel cfg: Metric=rtt, UpdateInt=60s
+2026-05-29 17:30:42,346-ARES.Feature.ProxyManager-INFO-proxying:119-ProxyMan cfg update. IsProxyNode:False, Proto:1.0, MaxPayload:1048576
+2026-05-29 17:30:42,347-ARES.Feature.ProxyManager-INFO-proxying:172-Client proxy routes configured: 1 valid routes.
+2026-05-29 17:30:42,347-ARES.Feature.PathSelector-INFO-path_selection:88-PathSel periodic update...
+2026-05-29 17:30:42,347-ARES.Feature.ProxyManager-DEBUG-proxying:590-ProxyMan (client) check. Config routes:1
+2026-05-29 17:30:43,680-ARES.Feature.PathSelector-INFO-path_selection:105-PathSelector stopping.
+2026-05-29 17:30:43,680-ARES.Feature.ProxyManager-INFO-proxying:630-ProxyManager shutting down...
+2026-05-29 17:30:43,680-ARES.Feature.ProxyManager-INFO-proxying:593-Shutting down client proxy resources.
+2026-05-29 17:30:43,848-ARES.Feature.PathSelector-INFO-path_selection:105-PathSelector stopping.
+2026-05-29 17:30:43,848-ARES.Feature.ProxyManager-INFO-proxying:630-ProxyManager shutting down...
+2026-05-29 17:30:43,848-ARES.Feature.ProxyManager-INFO-proxying:593-Shutting down client proxy resources.
