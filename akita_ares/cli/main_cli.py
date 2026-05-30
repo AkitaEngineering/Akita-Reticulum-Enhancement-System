@@ -1,9 +1,15 @@
-import argparse, os, re, sys, json, urllib.request 
+import argparse, os, re, sys, time, json, urllib.request 
 from akita_ares import VERSION 
 DEFAULT_CONFIG_PATH_CLI = os.path.join(os.path.dirname(__file__),"..","..","examples","sample_config.json")
 DEFAULT_SCHEMA_PATH_CLI = os.path.join(os.path.dirname(__file__),"..","..","examples","config_schema.json")
 PROMETHEUS_LINE_RE = re.compile(r'^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$')
 PROMETHEUS_LABEL_RE = re.compile(r'(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)="(?P<value>(?:\\.|[^"\\])*)"')
+DEFAULT_STATUS_WAIT_SECONDS = 0.0
+STATUS_WAIT_POLL_INTERVAL_SECONDS = 0.2
+RETRY_FAILURE_ERROR_COUNT_THRESHOLD = 3
+RETRY_FAILURE_ERROR_RATE_THRESHOLD = 0.25
+PROXY_TIMEOUT_ERROR_COUNT_THRESHOLD = 3
+PROXY_TIMEOUT_ERROR_RATE_THRESHOLD = 0.2
 
 def _resolve_schema_path(args, cfg_path):
     schema_path = args.schema
@@ -124,18 +130,24 @@ def _sum_metric_counts(entries, count_key='count', predicate=None):
             total += entry.get(count_key, 0) or 0
     return _normalize_metric_value(total)
 
-def _fetch_runtime_metrics(config):
+def _fetch_runtime_metrics(config, wait_seconds=DEFAULT_STATUS_WAIT_SECONDS):
     monitoring_config = config.get('monitoring', {})
     if not monitoring_config.get('enabled', True): return {'available': False, 'reason': 'monitoring_disabled'}
     listen_host = _normalize_status_metrics_host(monitoring_config.get('listen_host', '127.0.0.1'))
     port = monitoring_config.get('prometheus_port', 9876)
     prefix = monitoring_config.get('metrics_prefix', 'ares')
     endpoint = f'http://{listen_host}:{port}/metrics'
-    try:
-        response = urllib.request.urlopen(endpoint, timeout=1)
-        metrics_body = response.read().decode('utf-8')
-    except Exception as exc:
-        return {'available': False, 'endpoint': endpoint, 'error': str(exc)}
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        try:
+            response = urllib.request.urlopen(endpoint, timeout=1)
+            metrics_body = response.read().decode('utf-8')
+            break
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                return {'available': False, 'endpoint': endpoint, 'error': str(exc)}
+            remaining = max(0.0, deadline - time.monotonic())
+            time.sleep(min(STATUS_WAIT_POLL_INTERVAL_SECONDS, remaining))
 
     metrics = _parse_prometheus_metrics(metrics_body)
     return {
@@ -170,13 +182,25 @@ def _build_status_health_summary(config, runtime_metrics):
         }
 
     retry_failures = _sum_metric_counts(runtime_metrics.get('retry_operations', []), count_key='failures')
+    retry_executions = _sum_metric_counts(runtime_metrics.get('retry_operations', []), count_key='executions')
+    retry_failure_rate = round(retry_failures / retry_executions, 6) if retry_executions else None
     if retry_failures:
-        issues.append({
-            'code': 'retry_failures_present',
-            'severity': 'warning',
-            'count': retry_failures,
-            'message': f'{retry_failures} retry failures have been recorded.',
-        })
+        if retry_failures >= RETRY_FAILURE_ERROR_COUNT_THRESHOLD or (retry_failure_rate is not None and retry_failure_rate >= RETRY_FAILURE_ERROR_RATE_THRESHOLD):
+            issues.append({
+                'code': 'repeated_retry_failures',
+                'severity': 'error',
+                'count': retry_failures,
+                'failure_rate': retry_failure_rate,
+                'message': f'{retry_failures} retry failures exceed the current health threshold.',
+            })
+        else:
+            issues.append({
+                'code': 'retry_failures_present',
+                'severity': 'warning',
+                'count': retry_failures,
+                'failure_rate': retry_failure_rate,
+                'message': f'{retry_failures} retry failures have been recorded.',
+            })
 
     retries_needed = _sum_metric_counts(runtime_metrics.get('retry_operations', []), count_key='successes_on_retry')
     if retries_needed:
@@ -186,16 +210,40 @@ def _build_status_health_summary(config, runtime_metrics):
             'message': f'{retries_needed} operations succeeded only after one or more retries.',
         })
 
-    proxy_problem_outcomes = _sum_metric_counts(
+    proxy_timeout_count = _sum_metric_counts(
         runtime_metrics.get('proxy_request_outcomes', []),
-        predicate=lambda entry: entry.get('outcome') not in (None, 'success'),
+        predicate=lambda entry: entry.get('outcome') == 'timeout',
     )
-    if proxy_problem_outcomes:
+    proxy_total_requests = _sum_metric_counts(runtime_metrics.get('proxy_request_outcomes', []))
+    proxy_timeout_rate = round(proxy_timeout_count / proxy_total_requests, 6) if proxy_total_requests else None
+    if proxy_timeout_count:
+        if proxy_timeout_count >= PROXY_TIMEOUT_ERROR_COUNT_THRESHOLD or (proxy_timeout_rate is not None and proxy_timeout_rate >= PROXY_TIMEOUT_ERROR_RATE_THRESHOLD):
+            issues.append({
+                'code': 'high_proxy_timeout_rate',
+                'severity': 'error',
+                'count': proxy_timeout_count,
+                'timeout_rate': proxy_timeout_rate,
+                'message': f'{proxy_timeout_count} proxy timeouts exceed the current health threshold.',
+            })
+        else:
+            issues.append({
+                'code': 'proxy_timeouts_present',
+                'severity': 'warning',
+                'count': proxy_timeout_count,
+                'timeout_rate': proxy_timeout_rate,
+                'message': f'{proxy_timeout_count} proxy timeouts have been recorded.',
+            })
+
+    proxy_non_timeout_problems = _sum_metric_counts(
+        runtime_metrics.get('proxy_request_outcomes', []),
+        predicate=lambda entry: entry.get('outcome') not in (None, 'success', 'timeout'),
+    )
+    if proxy_non_timeout_problems:
         issues.append({
             'code': 'proxy_request_errors_present',
             'severity': 'warning',
-            'count': proxy_problem_outcomes,
-            'message': f'{proxy_problem_outcomes} non-success proxy request outcomes have been recorded.',
+            'count': proxy_non_timeout_problems,
+            'message': f'{proxy_non_timeout_problems} non-timeout proxy request errors have been recorded.',
         })
 
     proxy_policy_denials = _sum_metric_counts(runtime_metrics.get('proxy_policy_denials', []))
@@ -232,6 +280,7 @@ def parse_args(args=None):
     configtest_parser = subparsers.add_parser('configtest', help="Validate ARES config.")
     configtest_parser.set_defaults(func=handle_configtest_command)
     status_parser = subparsers.add_parser('status', help="Show ARES status.")
+    status_parser.add_argument('--wait', type=float, default=DEFAULT_STATUS_WAIT_SECONDS, help="Wait up to this many seconds for local /metrics before reporting it unavailable.")
     status_parser.set_defaults(func=handle_status_command)
     args_list = args if args is not None else sys.argv[1:]
     parsed_args, remaining = parser.parse_known_args(args_list)
@@ -277,6 +326,7 @@ def handle_status_command(args, app_class):
     config = manager.get_config()
     proxy_config = config.get('destination_proxying', {})
     monitoring_config = config.get('monitoring', {})
+    wait_seconds = max(0.0, float(getattr(args, 'wait', DEFAULT_STATUS_WAIT_SECONDS) or DEFAULT_STATUS_WAIT_SECONDS))
     status = {
         "status": "ok",
         "config_path": os.path.abspath(cfg_path),
@@ -302,8 +352,9 @@ def handle_status_command(args, app_class):
             "max_payload_size_bytes": proxy_config.get('max_payload_size_bytes'),
             "listen_on_aspect": proxy_config.get('listen_on_aspect'),
         },
-        "runtime_metrics": _fetch_runtime_metrics(config),
     }
+    status["status_wait_seconds"] = wait_seconds
+    status["runtime_metrics"] = _fetch_runtime_metrics(config, wait_seconds=wait_seconds)
     status["health_summary"] = _build_status_health_summary(config, status["runtime_metrics"])
     print(json.dumps(status, indent=2, sort_keys=True))
     sys.exit(0)

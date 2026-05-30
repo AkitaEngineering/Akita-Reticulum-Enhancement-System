@@ -61,7 +61,7 @@ python -m akita_ares.main --config examples/sample_config.json configtest
 python -m akita_ares.main --config examples/sample_config.json status
 ```
 
-When monitoring is enabled and the local metrics endpoint is reachable, `status` also summarizes live retry, path-selection, and proxy counters plus latency metrics from `/metrics` into JSON and derives a small health summary from those signals.
+When monitoring is enabled and the local metrics endpoint is reachable, `status` also summarizes live retry, path-selection, and proxy counters plus latency metrics from `/metrics` into JSON and derives a small health summary from those signals. Use `status --wait 3` to briefly poll `/metrics` during startup before declaring it unavailable.
 
 5. Start ARES.
 
