@@ -4,7 +4,7 @@ import unittest
 
 from unittest.mock import patch
 
-from akita_ares.cli.main_cli import handle_status_command, parse_args
+from akita_ares.cli.main_cli import handle_healthcheck_command, handle_status_command, parse_args
 
 
 class TestMainCli(unittest.TestCase):
@@ -24,6 +24,12 @@ class TestMainCli(unittest.TestCase):
         args = parse_args(['status', '--wait', '1.5'])
         self.assertEqual(args.command, 'status')
         self.assertEqual(args.wait, 1.5)
+
+    def test_parse_args_accepts_healthcheck_wait_option(self):
+        args = parse_args(['healthcheck', '--wait', '2'])
+        self.assertEqual(args.command, 'healthcheck')
+        self.assertEqual(args.wait, 2.0)
+        self.assertEqual(args.func.__name__, 'handle_healthcheck_command')
 
     def test_status_command_includes_runtime_metrics_snapshot(self):
         args = parse_args(['--config', 'config.json', 'status'])
@@ -129,3 +135,45 @@ class TestMainCli(unittest.TestCase):
         self.assertEqual(payload['status_wait_seconds'], 0.2)
         self.assertEqual(urlopen.call_count, 2)
         sleep_mock.assert_called()
+
+    def test_healthcheck_returns_nonzero_for_degraded_health(self):
+        args = parse_args(['healthcheck'])
+        config = {
+            'monitoring': {'enabled': True, 'listen_host': '127.0.0.1', 'prometheus_port': 9876, 'metrics_prefix': 'ares'},
+            'destination_proxying': {'enabled': False},
+        }
+        metrics_body = '\n'.join([
+            'ares_retry_executions_total{operation_name="probe"} 4',
+            'ares_retry_failures_total{operation_name="probe"} 3',
+        ])
+        stdout = io.StringIO()
+        with patch('akita_ares.core.config_manager.ConfigManager') as config_manager_cls, \
+             patch('akita_ares.cli.main_cli.urllib.request.urlopen') as urlopen, \
+             patch('sys.stdout', stdout):
+            config_manager_cls.return_value.get_config.return_value = config
+            urlopen.return_value.read.return_value = metrics_body.encode('utf-8')
+            with self.assertRaises(SystemExit) as exc:
+                handle_healthcheck_command(args, None)
+        self.assertEqual(exc.exception.code, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload['health_summary']['overall'], 'degraded')
+        self.assertEqual(payload['health_summary']['issues'][0]['code'], 'repeated_retry_failures')
+
+    def test_healthcheck_returns_zero_for_ok_health(self):
+        args = parse_args(['healthcheck'])
+        config = {
+            'monitoring': {'enabled': True, 'listen_host': '127.0.0.1', 'prometheus_port': 9876, 'metrics_prefix': 'ares'},
+            'destination_proxying': {'enabled': False},
+        }
+        metrics_body = 'ares_active_features_count 1\n'
+        stdout = io.StringIO()
+        with patch('akita_ares.core.config_manager.ConfigManager') as config_manager_cls, \
+             patch('akita_ares.cli.main_cli.urllib.request.urlopen') as urlopen, \
+             patch('sys.stdout', stdout):
+            config_manager_cls.return_value.get_config.return_value = config
+            urlopen.return_value.read.return_value = metrics_body.encode('utf-8')
+            with self.assertRaises(SystemExit) as exc:
+                handle_status_command(args, None)
+        self.assertEqual(exc.exception.code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload['health_summary']['overall'], 'ok')

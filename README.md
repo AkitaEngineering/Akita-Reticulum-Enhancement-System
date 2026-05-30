@@ -6,7 +6,7 @@ ARES is a Python service and CLI for operational hardening around the Reticulum 
 
 ARES does not ship a graphical frontend. The production-facing interfaces are:
 
-- CLI commands: `start`, `configtest`, `status`
+- CLI commands: `start`, `configtest`, `status`, `healthcheck`
 - JSON configuration with JSON Schema validation
 - HTTP monitoring endpoints: `/metrics` and `/health`
 
@@ -63,7 +63,15 @@ python -m akita_ares.main --config examples/sample_config.json status
 
 When monitoring is enabled and the local metrics endpoint is reachable, `status` also summarizes live retry, path-selection, and proxy counters plus latency metrics from `/metrics` into JSON and derives a small health summary from those signals. Use `status --wait 3` to briefly poll `/metrics` during startup before declaring it unavailable.
 
-5. Start ARES.
+5. Run an automation-friendly health check.
+
+```bash
+python -m akita_ares.main --config examples/sample_config.json healthcheck --wait 3
+```
+
+`healthcheck` prints the same JSON summary and exits non-zero when health is degraded or unknown.
+
+6. Start ARES.
 
 ```bash
 python -m akita_ares.main --config /path/to/config.json --loglevel INFO

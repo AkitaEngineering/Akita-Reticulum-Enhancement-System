@@ -268,50 +268,7 @@ def _build_status_health_summary(config, runtime_metrics):
         'notices': notices,
     }
 
-def parse_args(args=None):
-    parser = argparse.ArgumentParser(description="ARES", formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
-    parser.add_argument('--config', type=str, help=f"Path to ARES JSON config. Default: {DEFAULT_CONFIG_PATH_CLI}")
-    parser.add_argument('--schema', type=str, help=f"Path to ARES JSON schema. Default: {DEFAULT_SCHEMA_PATH_CLI}")
-    parser.add_argument('--loglevel', type=str, choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help="Override config log level.")
-    subparsers = parser.add_subparsers(dest='command', title='Available commands')
-    start_parser = subparsers.add_parser('start', help="Start ARES (default action).")
-    start_parser.set_defaults(func=handle_start_command)
-    configtest_parser = subparsers.add_parser('configtest', help="Validate ARES config.")
-    configtest_parser.set_defaults(func=handle_configtest_command)
-    status_parser = subparsers.add_parser('status', help="Show ARES status.")
-    status_parser.add_argument('--wait', type=float, default=DEFAULT_STATUS_WAIT_SECONDS, help="Wait up to this many seconds for local /metrics before reporting it unavailable.")
-    status_parser.set_defaults(func=handle_status_command)
-    args_list = args if args is not None else sys.argv[1:]
-    parsed_args, remaining = parser.parse_known_args(args_list)
-    if parsed_args.command is None:
-        parsed_args.command = 'start'
-        parsed_args.func = handle_start_command
-        if remaining:
-            parser.error(f"unrecognized arguments: {' '.join(remaining)}")
-        return parsed_args
-    if remaining:
-        parser.error(f"unrecognized arguments: {' '.join(remaining)}")
-    return parsed_args
-def handle_start_command(args, app_class): print(f"CLI: Preparing to start ARES...") 
-def handle_configtest_command(args, app_class):
-    from akita_ares.core.config_manager import ConfigManager; from akita_ares.core.logger import setup_logging, get_logger; import jsonschema
-    setup_logging(level=args.loglevel or 'INFO', console_output=True, log_file=None); logger = get_logger("ConfigTest"); logger.info("Performing config test...")
-    cfg_path = args.config or DEFAULT_CONFIG_PATH_CLI; schema_path = _resolve_schema_path(args, cfg_path)
-    logger.info(f"Testing config file: {os.path.abspath(cfg_path)}")
-    if schema_path and os.path.exists(os.path.expanduser(schema_path)): logger.info(f"Using schema: {os.path.abspath(os.path.expanduser(schema_path))}")
-    elif schema_path: logger.warning(f"Schema file not found: {os.path.expanduser(schema_path)}.")
-    else: logger.info("No schema specified.")
-    try:
-        manager = ConfigManager(config_fp=cfg_path, schema_fp=schema_path)
-        if not manager.config and os.path.exists(cfg_path): logger.error("Config test FAILED: File exists but failed load/parse."); sys.exit(1)
-        elif not os.path.exists(cfg_path): logger.error(f"Config test FAILED: File not found: {cfg_path}"); sys.exit(1)
-        if manager.schema: logger.info("Config test successful: Parsed and validated.")
-        else: logger.info("Config test successful: Parsed (schema validation skipped/failed load).")
-        sys.exit(0)
-    except jsonschema.exceptions.ValidationError as e: logger.error(f"Config validation FAILED: {e.message} path {list(e.path)}"); sys.exit(1)
-    except Exception as e: logger.error(f"Config test FAILED: {e}"); sys.exit(1)
-def handle_status_command(args, app_class):
+def _build_status_payload(args):
     from akita_ares.core.config_manager import ConfigManager
 
     cfg_path = args.config or DEFAULT_CONFIG_PATH_CLI
@@ -319,9 +276,8 @@ def handle_status_command(args, app_class):
 
     try:
         manager = ConfigManager(config_fp=cfg_path, schema_fp=schema_path)
-    except Exception as e:
-        print(json.dumps({"status": "error", "message": str(e)}, indent=2))
-        sys.exit(1)
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}, 1
 
     config = manager.get_config()
     proxy_config = config.get('destination_proxying', {})
@@ -352,12 +308,69 @@ def handle_status_command(args, app_class):
             "max_payload_size_bytes": proxy_config.get('max_payload_size_bytes'),
             "listen_on_aspect": proxy_config.get('listen_on_aspect'),
         },
+        "status_wait_seconds": wait_seconds,
     }
-    status["status_wait_seconds"] = wait_seconds
     status["runtime_metrics"] = _fetch_runtime_metrics(config, wait_seconds=wait_seconds)
     status["health_summary"] = _build_status_health_summary(config, status["runtime_metrics"])
+    return status, 0
+
+def parse_args(args=None):
+    parser = argparse.ArgumentParser(description="ARES", formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
+    parser.add_argument('--config', type=str, help=f"Path to ARES JSON config. Default: {DEFAULT_CONFIG_PATH_CLI}")
+    parser.add_argument('--schema', type=str, help=f"Path to ARES JSON schema. Default: {DEFAULT_SCHEMA_PATH_CLI}")
+    parser.add_argument('--loglevel', type=str, choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'], help="Override config log level.")
+    subparsers = parser.add_subparsers(dest='command', title='Available commands')
+    start_parser = subparsers.add_parser('start', help="Start ARES (default action).")
+    start_parser.set_defaults(func=handle_start_command)
+    configtest_parser = subparsers.add_parser('configtest', help="Validate ARES config.")
+    configtest_parser.set_defaults(func=handle_configtest_command)
+    status_parser = subparsers.add_parser('status', help="Show ARES status.")
+    status_parser.add_argument('--wait', type=float, default=DEFAULT_STATUS_WAIT_SECONDS, help="Wait up to this many seconds for local /metrics before reporting it unavailable.")
+    status_parser.set_defaults(func=handle_status_command)
+    healthcheck_parser = subparsers.add_parser('healthcheck', help="Check ARES health and return a non-zero exit code when degraded.")
+    healthcheck_parser.add_argument('--wait', type=float, default=DEFAULT_STATUS_WAIT_SECONDS, help="Wait up to this many seconds for local /metrics before reporting it unavailable.")
+    healthcheck_parser.set_defaults(func=handle_healthcheck_command)
+    args_list = args if args is not None else sys.argv[1:]
+    parsed_args, remaining = parser.parse_known_args(args_list)
+    if parsed_args.command is None:
+        parsed_args.command = 'start'
+        parsed_args.func = handle_start_command
+        if remaining:
+            parser.error(f"unrecognized arguments: {' '.join(remaining)}")
+        return parsed_args
+    if remaining:
+        parser.error(f"unrecognized arguments: {' '.join(remaining)}")
+    return parsed_args
+def handle_start_command(args, app_class): print(f"CLI: Preparing to start ARES...") 
+def handle_configtest_command(args, app_class):
+    from akita_ares.core.config_manager import ConfigManager; from akita_ares.core.logger import setup_logging, get_logger; import jsonschema
+    setup_logging(level=args.loglevel or 'INFO', console_output=True, log_file=None); logger = get_logger("ConfigTest"); logger.info("Performing config test...")
+    cfg_path = args.config or DEFAULT_CONFIG_PATH_CLI; schema_path = _resolve_schema_path(args, cfg_path)
+    logger.info(f"Testing config file: {os.path.abspath(cfg_path)}")
+    if schema_path and os.path.exists(os.path.expanduser(schema_path)): logger.info(f"Using schema: {os.path.abspath(os.path.expanduser(schema_path))}")
+    elif schema_path: logger.warning(f"Schema file not found: {os.path.expanduser(schema_path)}.")
+    else: logger.info("No schema specified.")
+    try:
+        manager = ConfigManager(config_fp=cfg_path, schema_fp=schema_path)
+        if not manager.config and os.path.exists(cfg_path): logger.error("Config test FAILED: File exists but failed load/parse."); sys.exit(1)
+        elif not os.path.exists(cfg_path): logger.error(f"Config test FAILED: File not found: {cfg_path}"); sys.exit(1)
+        if manager.schema: logger.info("Config test successful: Parsed and validated.")
+        else: logger.info("Config test successful: Parsed (schema validation skipped/failed load).")
+        sys.exit(0)
+    except jsonschema.exceptions.ValidationError as e: logger.error(f"Config validation FAILED: {e.message} path {list(e.path)}"); sys.exit(1)
+    except Exception as e: logger.error(f"Config test FAILED: {e}"); sys.exit(1)
+def handle_status_command(args, app_class):
+    status, exit_code = _build_status_payload(args)
     print(json.dumps(status, indent=2, sort_keys=True))
-    sys.exit(0)
+    sys.exit(exit_code)
+
+def handle_healthcheck_command(args, app_class):
+    status, exit_code = _build_status_payload(args)
+    if exit_code == 0:
+        exit_code = 0 if status.get('health_summary', {}).get('overall') == 'ok' else 1
+    print(json.dumps(status, indent=2, sort_keys=True))
+    sys.exit(exit_code)
 if __name__ == "__main__":
     print("Testing CLI parsing (run 'python -m akita_ares.main' to start app)..."); test_args = parse_args() 
     print(f"Parsed arguments: {test_args}"); print(f"Function to call: {test_args.func.__name__}") if hasattr(test_args,'func') else print("Default command logic handled by caller.")
