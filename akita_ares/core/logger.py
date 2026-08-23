@@ -3,7 +3,6 @@ import logging.handlers
 import os
 import sys
 
-
 ARES_LOGGER_NAME = "ARES"
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -36,7 +35,9 @@ def setup_logging(
     root_logger.propagate = False
     root_logger.setLevel(log_level)
     for logger_name, logger_object in logging.Logger.manager.loggerDict.items():
-        if logger_name.startswith(f"{ARES_LOGGER_NAME}.") and isinstance(logger_object, logging.Logger):
+        if logger_name.startswith(f"{ARES_LOGGER_NAME}.") and isinstance(
+            logger_object, logging.Logger
+        ):
             logger_object.setLevel(logging.NOTSET)
     formatter = logging.Formatter(
         "%(asctime)s-%(name)s-%(levelname)s-%(module)s:%(lineno)d-%(message)s"
@@ -85,7 +86,9 @@ def update_module_log_levels(module_levels_dict):
     for name, level_text in module_levels_dict.items():
         try:
             normalized_level, level = _coerce_log_level(level_text)
-            logger_name = name if name.startswith(f"{ARES_LOGGER_NAME}.") else f"{ARES_LOGGER_NAME}.{name}"
+            logger_name = (
+                name if name.startswith(f"{ARES_LOGGER_NAME}.") else f"{ARES_LOGGER_NAME}.{name}"
+            )
             logging.getLogger(logger_name).setLevel(level)
             root_logger.info("Set level for '%s' to %s", logger_name, normalized_level)
         except (TypeError, ValueError) as exc:
@@ -93,12 +96,18 @@ def update_module_log_levels(module_levels_dict):
 
 
 def get_logger(name=None):
-    return logging.getLogger(f"{ARES_LOGGER_NAME}.{name}") if name else logging.getLogger(ARES_LOGGER_NAME)
+    return (
+        logging.getLogger(f"{ARES_LOGGER_NAME}.{name}")
+        if name
+        else logging.getLogger(ARES_LOGGER_NAME)
+    )
 
 
 if not logging.getLogger(ARES_LOGGER_NAME).handlers:
     _default_handler = logging.StreamHandler(sys.stdout)
-    _default_handler.setFormatter(logging.Formatter("%(asctime)s-%(name)s-%(levelname)s-%(message)s"))
+    _default_handler.setFormatter(
+        logging.Formatter("%(asctime)s-%(name)s-%(levelname)s-%(message)s")
+    )
     logging.getLogger(ARES_LOGGER_NAME).addHandler(_default_handler)
     logging.getLogger(ARES_LOGGER_NAME).setLevel(logging.WARNING)
     logging.getLogger(ARES_LOGGER_NAME).propagate = False

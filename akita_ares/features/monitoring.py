@@ -1,12 +1,11 @@
-import threading
 import re
 import socket
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 
 from akita_ares.core.logger import get_logger
-
 
 METRIC_PREFIX_PATTERN = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
 
@@ -86,21 +85,81 @@ class MetricsMonitor:
 
         self.ares_info = register(Gauge, "info", "Info about ARES instance", ["version"])
         self.ares_info.labels(version=VERSION).set(1)
-        self.active_features = register(Gauge, "active_features_count", "Number of active ARES features")
-        self.retry_executions_total = register(Counter, "retry_executions_total", "Operations executed via RetryManager", ["operation_name"])
-        self.retry_successes_total = register(Counter, "retry_successes_total", "Successful operations via RetryManager", ["operation_name"])
-        self.retry_successes_on_retry_total = register(Counter, "retry_successes_on_retry_total", "Operations succeeding after retries", ["operation_name"])
-        self.retry_failures_total = register(Counter, "retry_failures_total", "Operations failing after all retries", ["operation_name"])
-        self.retry_operation_duration_seconds = register(Histogram, "retry_operation_duration_seconds", "Operation duration including retries", ["operation_name"])
-        self.proxied_packets_total = register(Counter, "proxied_packets_total", "Proxied packets", ["proxy_alias", "direction"])
-        self.proxy_request_outcomes_total = register(Counter, "proxy_request_outcomes_total", "Proxy request outcomes", ["proxy_alias", "mode", "outcome"])
-        self.proxy_request_duration_seconds = register(Histogram, "proxy_request_duration_seconds", "Proxy request duration seconds", ["proxy_alias", "mode", "outcome"])
-        self.proxy_request_phase_duration_seconds = register(Histogram, "proxy_request_phase_duration_seconds", "Proxy request phase duration seconds", ["proxy_alias", "mode", "phase", "outcome"])
-        self.proxy_policy_denials_total = register(Counter, "proxy_policy_denials_total", "Proxy route policy denials", ["proxy_alias", "reason"])
-        self.active_proxy_routes = register(Gauge, "active_proxy_routes_count", "Active client proxy routes")
-        self.active_proxy_clients = register(Gauge, "active_proxy_clients_count", "Active clients on this proxy node")
-        self.path_selection_evaluations_total = register(Counter, "path_selection_evaluations_total", "Path selection evaluations")
-        self.path_selection_chosen_metric_value = register(Gauge, "path_selection_chosen_metric_value", "Metric value for chosen path", ["destination_hash", "metric_type"])
+        self.active_features = register(
+            Gauge, "active_features_count", "Number of active ARES features"
+        )
+        self.retry_executions_total = register(
+            Counter,
+            "retry_executions_total",
+            "Operations executed via RetryManager",
+            ["operation_name"],
+        )
+        self.retry_successes_total = register(
+            Counter,
+            "retry_successes_total",
+            "Successful operations via RetryManager",
+            ["operation_name"],
+        )
+        self.retry_successes_on_retry_total = register(
+            Counter,
+            "retry_successes_on_retry_total",
+            "Operations succeeding after retries",
+            ["operation_name"],
+        )
+        self.retry_failures_total = register(
+            Counter,
+            "retry_failures_total",
+            "Operations failing after all retries",
+            ["operation_name"],
+        )
+        self.retry_operation_duration_seconds = register(
+            Histogram,
+            "retry_operation_duration_seconds",
+            "Operation duration including retries",
+            ["operation_name"],
+        )
+        self.proxied_packets_total = register(
+            Counter, "proxied_packets_total", "Proxied packets", ["proxy_alias", "direction"]
+        )
+        self.proxy_request_outcomes_total = register(
+            Counter,
+            "proxy_request_outcomes_total",
+            "Proxy request outcomes",
+            ["proxy_alias", "mode", "outcome"],
+        )
+        self.proxy_request_duration_seconds = register(
+            Histogram,
+            "proxy_request_duration_seconds",
+            "Proxy request duration seconds",
+            ["proxy_alias", "mode", "outcome"],
+        )
+        self.proxy_request_phase_duration_seconds = register(
+            Histogram,
+            "proxy_request_phase_duration_seconds",
+            "Proxy request phase duration seconds",
+            ["proxy_alias", "mode", "phase", "outcome"],
+        )
+        self.proxy_policy_denials_total = register(
+            Counter,
+            "proxy_policy_denials_total",
+            "Proxy route policy denials",
+            ["proxy_alias", "reason"],
+        )
+        self.active_proxy_routes = register(
+            Gauge, "active_proxy_routes_count", "Active client proxy routes"
+        )
+        self.active_proxy_clients = register(
+            Gauge, "active_proxy_clients_count", "Active clients on this proxy node"
+        )
+        self.path_selection_evaluations_total = register(
+            Counter, "path_selection_evaluations_total", "Path selection evaluations"
+        )
+        self.path_selection_chosen_metric_value = register(
+            Gauge,
+            "path_selection_chosen_metric_value",
+            "Metric value for chosen path",
+            ["destination_hash", "metric_type"],
+        )
 
     def start(self):
         with self._server_lock:
@@ -134,7 +193,9 @@ class MetricsMonitor:
                     self.wfile.write(payload)
 
                 def log_message(self, format_string, *args):
-                    monitor.logger.debug("Metrics HTTP %s - %s", self.address_string(), format_string % args)
+                    monitor.logger.debug(
+                        "Metrics HTTP %s - %s", self.address_string(), format_string % args
+                    )
 
             try:
                 self._http_server = MetricsHTTPServer((self.listen_host, self.port), HealthHandler)
@@ -191,10 +252,14 @@ class MetricsMonitor:
         self.proxy_request_outcomes_total.labels(proxy_alias, mode, outcome).inc()
 
     def record_proxy_request_duration(self, proxy_alias, mode, outcome, dur_s):
-        self.proxy_request_duration_seconds.labels(proxy_alias, mode, outcome).observe(max(0.0, float(dur_s)))
+        self.proxy_request_duration_seconds.labels(proxy_alias, mode, outcome).observe(
+            max(0.0, float(dur_s))
+        )
 
     def record_proxy_request_phase_duration(self, proxy_alias, mode, phase, outcome, dur_s):
-        self.proxy_request_phase_duration_seconds.labels(proxy_alias, mode, phase, outcome).observe(max(0.0, float(dur_s)))
+        self.proxy_request_phase_duration_seconds.labels(proxy_alias, mode, phase, outcome).observe(
+            max(0.0, float(dur_s))
+        )
 
     def increment_proxy_policy_denial(self, proxy_alias, reason):
         self.proxy_policy_denials_total.labels(proxy_alias, reason).inc()

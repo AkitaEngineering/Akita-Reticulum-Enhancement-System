@@ -4,7 +4,6 @@ import time
 
 from akita_ares.core.logger import get_logger
 
-
 RNS_RETRYABLE_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
 
 
@@ -49,7 +48,8 @@ class RetryManager:
     def _calc_delay(attempt, base_delay, backoff_factor, jitter_max):
         delay = base_delay * (backoff_factor ** (attempt - 1))
         if jitter_max > 0:
-            delay += random.uniform(-jitter_max, jitter_max)
+            # Retry timing jitter has no security or cryptographic purpose.
+            delay += random.uniform(-jitter_max, jitter_max)  # nosec B311
         return max(0.0, delay)
 
     @staticmethod
@@ -57,8 +57,12 @@ class RetryManager:
         if isinstance(retry_exceptions, type) and issubclass(retry_exceptions, Exception):
             retry_exceptions = (retry_exceptions,)
         if not isinstance(retry_exceptions, tuple) or not retry_exceptions:
-            raise TypeError("retry_ex must be an exception class or non-empty tuple of exception classes")
-        if not all(isinstance(item, type) and issubclass(item, Exception) for item in retry_exceptions):
+            raise TypeError(
+                "retry_ex must be an exception class or non-empty tuple of exception classes"
+            )
+        if not all(
+            isinstance(item, type) and issubclass(item, Exception) for item in retry_exceptions
+        ):
             raise TypeError("retry_ex must contain only Exception subclasses")
         return retry_exceptions
 

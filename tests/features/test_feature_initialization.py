@@ -3,7 +3,6 @@ import unittest
 from akita_ares.core.logger import setup_logging
 from akita_ares.features import monitoring, path_selection, proxying, request_retries
 
-
 setup_logging(level="CRITICAL", console_output=False, log_file=None)
 
 

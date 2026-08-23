@@ -1,6 +1,5 @@
 import os
 import signal
-import sys
 import sysconfig
 import threading
 
@@ -64,7 +63,9 @@ class ARESApp:
         )
         self.logger = get_logger("ARESApp")
         self.logger.info("ARES version %s initializing", self._get_version())
-        self.logger.info("Using config %s and schema %s", self.config_manager.config_fp, effective_schema_path)
+        self.logger.info(
+            "Using config %s and schema %s", self.config_manager.config_fp, effective_schema_path
+        )
 
         if not RNS_AVAILABLE:
             raise RuntimeError("Reticulum (RNS) is required to start ARES")
@@ -92,7 +93,9 @@ class ARESApp:
         if configured_path:
             configured_path = os.path.expanduser(configured_path)
             if not os.path.isabs(configured_path):
-                configured_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), configured_path)
+                configured_path = os.path.join(
+                    os.path.dirname(os.path.abspath(config_path)), configured_path
+                )
             return os.path.abspath(configured_path)
         return DEFAULT_SCHEMA_PATH
 
@@ -168,7 +171,9 @@ class ARESApp:
         if retry_config.get("enabled", False):
             active_feature_count += 1
             if self.retry_manager is None:
-                self.retry_manager = request_retries.RetryManager(retry_config, self.metrics_monitor)
+                self.retry_manager = request_retries.RetryManager(
+                    retry_config, self.metrics_monitor
+                )
             else:
                 self.retry_manager.metrics_monitor = self.metrics_monitor
                 self.retry_manager.update_config(retry_config)
@@ -202,7 +207,10 @@ class ARESApp:
                     identity=self.rns_identity,
                     path_selector=self.path_selector,
                 )
-                if proxy_config.get("is_proxy_node", False) and self.proxy_manager.service_destination is None:
+                if (
+                    proxy_config.get("is_proxy_node", False)
+                    and self.proxy_manager.service_destination is None
+                ):
                     raise RuntimeError("Proxy-node service destination could not be initialized")
             else:
                 self.proxy_manager.metrics_monitor = self.metrics_monitor
@@ -235,7 +243,12 @@ class ARESApp:
         new_config = self.config_manager.get_config()
         old_core = old_config.get("ares_core", {})
         new_core = new_config.get("ares_core", {})
-        immutable_keys = ("rns_config_path", "identity_path")
+        immutable_keys = (
+            "rns_config_path",
+            "identity_path",
+            "config_schema_path",
+            "enable_transport_node_features",
+        )
         changed_immutable_keys = [
             key for key in immutable_keys if old_core.get(key) != new_core.get(key)
         ]
@@ -263,14 +276,35 @@ class ARESApp:
             self.logger.error("Unable to apply reloaded configuration: %s", exc, exc_info=True)
             self.config_manager.config = old_config
             self.config_manager.last_reload_succeeded = False
+            rollback_failed = False
+            try:
+                old_log_config = old_config.get("logging", {})
+                setup_logging(
+                    level=self.args.loglevel or old_log_config.get("level", "INFO"),
+                    log_file=old_log_config.get("file", "ares.log"),
+                    max_bytes=old_log_config.get("max_bytes", 10 * 1024 * 1024),
+                    backup_count=old_log_config.get("backup_count", 5),
+                    console_output=old_log_config.get("console_output", True),
+                    module_levels=old_log_config.get("module_levels"),
+                )
+                self.logger = get_logger("ARESApp")
+            except Exception as logging_rollback_exc:
+                rollback_failed = True
+                self.logger.critical(
+                    "Unable to restore the previous logging configuration: %s",
+                    logging_rollback_exc,
+                    exc_info=True,
+                )
             try:
                 self._initialize_features()
             except Exception as rollback_exc:
+                rollback_failed = True
                 self.logger.critical(
                     "Unable to restore the previous feature configuration: %s",
                     rollback_exc,
                     exc_info=True,
                 )
+            if rollback_failed:
                 self._stop_event.set()
 
     def handle_sigint_sigterm(self, signum, frame):
@@ -296,14 +330,24 @@ class ARESApp:
                 return
             self._shutdown_complete = True
         self._stop_event.set()
-        if self.path_selector:
-            self.path_selector.stop()
-        if self.proxy_manager:
-            self.proxy_manager.shutdown()
-        if self.metrics_monitor:
-            self.metrics_monitor.stop()
-        if self.rns_instance is not None and RNS_AVAILABLE:
-            RNS.Reticulum.exit_handler()
+        cleanup_actions = (
+            ("path selector", self.path_selector.stop if self.path_selector else None),
+            ("proxy manager", self.proxy_manager.shutdown if self.proxy_manager else None),
+            ("metrics monitor", self.metrics_monitor.stop if self.metrics_monitor else None),
+            (
+                "Reticulum",
+                RNS.Reticulum.exit_handler
+                if self.rns_instance is not None and RNS_AVAILABLE
+                else None,
+            ),
+        )
+        for component_name, cleanup in cleanup_actions:
+            if cleanup is None:
+                continue
+            try:
+                cleanup()
+            except Exception:
+                self.logger.exception("Error shutting down %s", component_name)
         self.logger.info("ARES shutdown complete")
 
 

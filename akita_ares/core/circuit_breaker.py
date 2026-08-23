@@ -4,7 +4,6 @@ from enum import Enum
 
 from akita_ares.core.logger import get_logger
 
-
 logger = get_logger("CircuitBreaker")
 
 
@@ -17,7 +16,9 @@ class CircuitBreakerState(Enum):
 class CircuitBreaker:
     """Thread-safe circuit breaker with a single half-open probe."""
 
-    def __init__(self, failure_threshold: int, recovery_timeout_seconds: float, name: str = "DefCB"):
+    def __init__(
+        self, failure_threshold: int, recovery_timeout_seconds: float, name: str = "DefCB"
+    ):
         self.failure_threshold = int(failure_threshold)
         self.recovery_timeout_seconds = float(recovery_timeout_seconds)
         if self.failure_threshold < 1:

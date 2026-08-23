@@ -1,10 +1,10 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
-
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from akita_ares.main import ARESApp
 
@@ -90,10 +90,12 @@ class TestARESAppLifecycle(unittest.TestCase):
             )
             _FakeReticulum.instances.clear()
             _FakeReticulum.exited = False
-            with patch("akita_ares.main.RNS", fake_rns), \
-                 patch("akita_ares.main.RNS_AVAILABLE", True), \
-                 patch("akita_ares.main.proxying.ProxyManager", _FakeProxyManager), \
-                 patch("akita_ares.main.signal.signal"):
+            with (
+                patch("akita_ares.main.RNS", fake_rns),
+                patch("akita_ares.main.RNS_AVAILABLE", True),
+                patch("akita_ares.main.proxying.ProxyManager", _FakeProxyManager),
+                patch("akita_ares.main.signal.signal"),
+            ):
                 app = ARESApp(args)
                 self.assertTrue(os.path.exists(identity_path))
                 self.assertEqual(os.stat(identity_path).st_mode & 0o777, 0o600)
@@ -102,3 +104,49 @@ class TestARESAppLifecycle(unittest.TestCase):
                 app.shutdown()
             self.assertTrue(_FakeReticulum.exited)
             self.assertEqual(len(_FakeReticulum.instances), 1)
+
+    def test_shutdown_continues_after_component_cleanup_failure(self):
+        app = object.__new__(ARESApp)
+        app.logger = Mock()
+        app._stop_event = threading.Event()
+        app._shutdown_lock = threading.Lock()
+        app._shutdown_complete = False
+        app.path_selector = SimpleNamespace(stop=Mock(side_effect=RuntimeError("stop failed")))
+        app.proxy_manager = SimpleNamespace(shutdown=Mock())
+        app.metrics_monitor = SimpleNamespace(stop=Mock())
+        app.rns_instance = object()
+        fake_rns = SimpleNamespace(Reticulum=SimpleNamespace(exit_handler=Mock()))
+
+        with patch("akita_ares.main.RNS", fake_rns), patch("akita_ares.main.RNS_AVAILABLE", True):
+            app.shutdown()
+
+        app.proxy_manager.shutdown.assert_called_once_with()
+        app.metrics_monitor.stop.assert_called_once_with()
+        fake_rns.Reticulum.exit_handler.assert_called_once_with()
+        app.logger.exception.assert_called_once()
+
+    def test_reload_rejects_transport_setting_change(self):
+        old_config = {
+            "ares_core": {
+                "rns_config_path": "/tmp/rns",
+                "enable_transport_node_features": False,
+            }
+        }
+        new_config = {
+            "ares_core": {
+                "rns_config_path": "/tmp/rns",
+                "enable_transport_node_features": True,
+            }
+        }
+        app = object.__new__(ARESApp)
+        app.logger = Mock()
+        app.config_manager = Mock()
+        app.config_manager.get_config.side_effect = [old_config, new_config]
+        app.config_manager.last_reload_succeeded = True
+        app._initialize_features = Mock()
+
+        app.handle_sighup(None, None)
+
+        self.assertEqual(app.config_manager.config, old_config)
+        self.assertFalse(app.config_manager.last_reload_succeeded)
+        app._initialize_features.assert_not_called()

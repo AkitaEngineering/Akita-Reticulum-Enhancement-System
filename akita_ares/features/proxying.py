@@ -28,7 +28,9 @@ MAX_PROXY_REQUEST_TIMEOUT_SECONDS = 3600.0
 
 
 class ProxyManager:
-    def __init__(self, config, rns_instance=None, metrics_monitor=None, identity=None, path_selector=None):
+    def __init__(
+        self, config, rns_instance=None, metrics_monitor=None, identity=None, path_selector=None
+    ):
         self.logger = get_logger("Feature.ProxyManager")
         self.rns_instance = rns_instance
         self.identity = identity or getattr(rns_instance, "identity", None)
@@ -73,10 +75,18 @@ class ProxyManager:
 
         self.config = config
         self.proxy_routes_config = config.get("proxy_routes", [])
-        self.proxy_protocol_version = config.get("proxy_protocol_version", PROXY_PROTOCOL_VERSION_1_0)
-        self.max_payload_size_bytes = max(1, int(config.get("max_payload_size_bytes", DEFAULT_MAX_PROXY_PAYLOAD_BYTES)))
-        configured_request_timeout = config.get("default_request_timeout_seconds", DEFAULT_PROXY_REQUEST_TIMEOUT_SECONDS)
-        default_request_timeout_s, timeout_error = self._coerce_request_timeout(configured_request_timeout)
+        self.proxy_protocol_version = config.get(
+            "proxy_protocol_version", PROXY_PROTOCOL_VERSION_1_0
+        )
+        self.max_payload_size_bytes = max(
+            1, int(config.get("max_payload_size_bytes", DEFAULT_MAX_PROXY_PAYLOAD_BYTES))
+        )
+        configured_request_timeout = config.get(
+            "default_request_timeout_seconds", DEFAULT_PROXY_REQUEST_TIMEOUT_SECONDS
+        )
+        default_request_timeout_s, timeout_error = self._coerce_request_timeout(
+            configured_request_timeout
+        )
         if timeout_error:
             self.logger.warning(
                 "Invalid default_request_timeout_seconds %r; using fallback %.3f.",
@@ -122,6 +132,8 @@ class ProxyManager:
                 self._shutdown_proxy_service_destination()
             if self.service_destination is None:
                 self._setup_proxy_service_destination()
+            if self.service_destination is None:
+                raise RuntimeError("Proxy service destination could not be initialized")
         else:
             if previous_role:
                 self._shutdown_proxy_service_destination()
@@ -147,9 +159,11 @@ class ProxyManager:
                 self.logger.warning("Skipping duplicate proxy route alias '%s'.", alias)
                 continue
             if not self._is_valid_destination_name(entry_name):
-                self.logger.warning("Skipping route '%s' with invalid entry destination name.", alias)
+                self.logger.warning(
+                    "Skipping route '%s' with invalid entry destination name.", alias
+                )
                 continue
-            if not RNS_HASH_REGEX.match(exit_hash):
+            if not self._is_valid_destination_hash(exit_hash):
                 self.logger.warning(
                     "Skipping invalid proxy route '%s': exit_node_identity_hash '%s' invalid format.",
                     alias,
@@ -217,7 +231,9 @@ class ProxyManager:
             return
 
         if not self._is_valid_destination_name(self.service_destination_name):
-            self.logger.error("Invalid proxy service destination name: %r", self.service_destination_name)
+            self.logger.error(
+                "Invalid proxy service destination name: %r", self.service_destination_name
+            )
             return
         destination_name = self.service_destination_name.split(".")
         try:
@@ -229,7 +245,9 @@ class ProxyManager:
                 Destination.SINGLE,
                 *destination_name,
             )
-            self.service_destination.set_link_established_callback(self._handle_client_link_established)
+            self.service_destination.set_link_established_callback(
+                self._handle_client_link_established
+            )
             self.service_destination.announce()
             self.last_announce_at = time.monotonic()
             self.logger.info(
@@ -240,6 +258,9 @@ class ProxyManager:
         except Exception as exc:
             self.logger.error("Failed to create proxy service destination: %s", exc, exc_info=True)
             self.service_destination = None
+            raise RuntimeError(
+                f"Failed to create proxy service destination {self.service_destination_name!r}"
+            ) from exc
 
     def _handle_client_link_established(self, link):
         if not RNS_AVAILABLE:
@@ -254,7 +275,9 @@ class ProxyManager:
                 self.active_client_links[link_id] = link
 
         if reject_link:
-            self.logger.warning("Rejecting proxy client link %s: active-client limit reached", link_id)
+            self.logger.warning(
+                "Rejecting proxy client link %s: active-client limit reached", link_id
+            )
             self._close_link(link)
             return
 
@@ -287,9 +310,13 @@ class ProxyManager:
                     self.pending_request_ids.discard(request_id)
                     target_link = self.pending_target_links.pop(request_id, None)
                     started_at = self.pending_request_started_at.pop(request_id, None)
-                    target_request_started_at = self.pending_target_request_started_at.pop(request_id, None)
+                    target_request_started_at = self.pending_target_request_started_at.pop(
+                        request_id, None
+                    )
                     if target_link is not None:
-                        target_links_to_close.append((request_id, target_link, started_at, target_request_started_at))
+                        target_links_to_close.append(
+                            (request_id, target_link, started_at, target_request_started_at)
+                        )
                     closed_reqs += 1
 
         for request_id, target_link, started_at, target_request_started_at in target_links_to_close:
@@ -300,7 +327,9 @@ class ProxyManager:
                 "closed",
                 target_request_started_at,
             )
-            self._record_proxy_request_terminal("proxy_node_service", "request", "closed", started_at)
+            self._record_proxy_request_terminal(
+                "proxy_node_service", "request", "closed", started_at
+            )
             self.logger.debug("Closing target link for abandoned proxy request %s.", request_id)
             try:
                 if self._link_is_active(target_link):
@@ -309,7 +338,9 @@ class ProxyManager:
                 self.logger.error("Error closing target link for request %s: %s", request_id, exc)
 
         if closed_reqs > 0:
-            self.logger.debug("Removed %s pending requests for closed link %s.", closed_reqs, link_id)
+            self.logger.debug(
+                "Removed %s pending requests for closed link %s.", closed_reqs, link_id
+            )
         if self.metrics_monitor:
             self.metrics_monitor.set_active_proxy_clients_count(len(self.active_client_links))
 
@@ -331,10 +362,14 @@ class ProxyManager:
 
         try:
             message = json.loads(resource_data.decode("utf-8"))
+            if not isinstance(message, dict):
+                raise TypeError("proxy request must be a JSON object")
             request_id = message.get("request_id")
         except Exception as exc:
             self.logger.error("Error decoding proxy request from %s: %s", client_link_id_hex, exc)
-            self._send_proxy_response(client_link, request_id or "unknown", error="request_decode_error")
+            self._send_proxy_response(
+                client_link, request_id or "unknown", error="request_decode_error"
+            )
             return
 
         if message.get("version") != self.proxy_protocol_version:
@@ -343,7 +378,9 @@ class ProxyManager:
                 client_link_id_hex,
                 message.get("version"),
             )
-            self._send_proxy_response(client_link, request_id, error="incompatible_protocol_version")
+            self._send_proxy_response(
+                client_link, request_id, error="incompatible_protocol_version"
+            )
             return
 
         message_type = message.get("type", "data_oneway")
@@ -355,7 +392,9 @@ class ProxyManager:
         request_started_at = time.monotonic() if message_type == "request" else None
 
         if not request_id or not target_hash_hex or not target_name or payload_b64 is None:
-            self.logger.error("Invalid proxy request from %s: missing required fields.", client_link_id_hex)
+            self.logger.error(
+                "Invalid proxy request from %s: missing required fields.", client_link_id_hex
+            )
             self._send_proxy_response(client_link, request_id, error="invalid_request_format")
             return
 
@@ -365,18 +404,26 @@ class ProxyManager:
             return
 
         if message_type not in {"data_oneway", "request"}:
-            self.logger.error("Invalid proxy request type from %s: %s", client_link_id_hex, message_type)
+            self.logger.error(
+                "Invalid proxy request type from %s: %s", client_link_id_hex, message_type
+            )
             self._send_proxy_response(client_link, request_id, error="invalid_request_type")
             return
 
-        if not RNS_HASH_REGEX.match(target_hash_hex):
-            self.logger.error("Invalid target hash format from %s: %s", client_link_id_hex, target_hash_hex)
+        if not self._is_valid_destination_hash(target_hash_hex):
+            self.logger.error(
+                "Invalid target hash format from %s: %s", client_link_id_hex, target_hash_hex
+            )
             self._send_proxy_response(client_link, request_id, error="invalid_target_hash_format")
             return
 
         if not self._is_valid_destination_name(target_name):
-            self.logger.error("Invalid target destination name from %s: %s", client_link_id_hex, target_name)
-            self._send_proxy_response(client_link, request_id, error="invalid_target_destination_name")
+            self.logger.error(
+                "Invalid target destination name from %s: %s", client_link_id_hex, target_name
+            )
+            self._send_proxy_response(
+                client_link, request_id, error="invalid_target_destination_name"
+            )
             return
 
         allowed, policy_error = self._inbound_target_allowed(target_name)
@@ -391,7 +438,10 @@ class ProxyManager:
             return
 
         try:
-            if not isinstance(payload_b64, str) or len(payload_b64) > ((self.max_payload_size_bytes + 2) // 3) * 4:
+            if (
+                not isinstance(payload_b64, str)
+                or len(payload_b64) > ((self.max_payload_size_bytes + 2) // 3) * 4
+            ):
                 raise ValueError("encoded payload exceeds configured size limit")
             payload_bytes = base64.b64decode(payload_b64, validate=True)
         except Exception as exc:
@@ -408,26 +458,42 @@ class ProxyManager:
                 self.max_payload_size_bytes,
             )
             if message_type == "request":
-                self._record_proxy_request_terminal("proxy_node_service", "request", "invalid", request_started_at)
+                self._record_proxy_request_terminal(
+                    "proxy_node_service", "request", "invalid", request_started_at
+                )
             self._send_proxy_response(client_link, request_id, error="payload_too_large")
             return
 
         if message_type == "request":
             if not self._is_valid_request_path(request_path):
-                self.logger.error("Invalid request path from %s: %s", client_link_id_hex, request_path)
-                self._record_proxy_request_terminal("proxy_node_service", "request", "invalid", request_started_at)
+                self.logger.error(
+                    "Invalid request path from %s: %s", client_link_id_hex, request_path
+                )
+                self._record_proxy_request_terminal(
+                    "proxy_node_service", "request", "invalid", request_started_at
+                )
                 self._send_proxy_response(client_link, request_id, error="invalid_request_path")
                 return
 
-            request_timeout_value = request_timeout_s if request_timeout_s is not None else self.default_request_timeout_s
+            request_timeout_value = (
+                request_timeout_s
+                if request_timeout_s is not None
+                else self.default_request_timeout_s
+            )
             request_timeout_s, timeout_error = self._coerce_request_timeout(request_timeout_value)
             if timeout_error:
-                self.logger.error("Invalid request timeout from %s: %s", client_link_id_hex, timeout_error)
-                self._record_proxy_request_terminal("proxy_node_service", "request", "invalid", request_started_at)
+                self.logger.error(
+                    "Invalid request timeout from %s: %s", client_link_id_hex, timeout_error
+                )
+                self._record_proxy_request_terminal(
+                    "proxy_node_service", "request", "invalid", request_started_at
+                )
                 self._send_proxy_response(client_link, request_id, error=timeout_error)
                 return
 
-        target_destination, target_error = self._build_outbound_destination(target_hash_hex, target_name)
+        target_destination, target_error = self._build_outbound_destination(
+            target_hash_hex, target_name
+        )
         if target_error:
             self.logger.error(
                 "Unable to build target destination for request %s from %s: %s",
@@ -482,7 +548,9 @@ class ProxyManager:
                 target_hash_hex[:8],
             )
             if self.metrics_monitor:
-                self.metrics_monitor.increment_proxied_packets("proxy_node_service", direction="sent_to_target")
+                self.metrics_monitor.increment_proxied_packets(
+                    "proxy_node_service", direction="sent_to_target"
+                )
             self._record_proxy_request_outcome("proxy_node_service", "data_oneway", "success")
         except Exception as exc:
             self.logger.error(
@@ -504,14 +572,20 @@ class ProxyManager:
             try:
                 RNS.Transport.request_path(target_hash_bytes)
             except Exception as exc:
-                self.logger.warning("Unable to request path for unknown target %s: %s", target_hash_hex[:8], exc)
+                self.logger.warning(
+                    "Unable to request path for unknown target %s: %s", target_hash_hex[:8], exc
+                )
             return None, "unknown_target_destination"
 
         try:
             app_name, aspects = Destination.app_and_aspects_from_name(target_destination_name)
-            destination = Destination(target_identity, Destination.OUT, Destination.SINGLE, app_name, *aspects)
+            destination = Destination(
+                target_identity, Destination.OUT, Destination.SINGLE, app_name, *aspects
+            )
         except Exception as exc:
-            self.logger.warning("Invalid target destination name %r: %s", target_destination_name, exc)
+            self.logger.warning(
+                "Invalid target destination name %r: %s", target_destination_name, exc
+            )
             return None, "invalid_target_destination_name"
 
         resolved_hash = getattr(destination, "hash", None)
@@ -539,7 +613,7 @@ class ProxyManager:
             self._invoke_response_callback(response_callback, None, "rns_unavailable")
             return None
 
-        if not RNS_HASH_REGEX.match(target_dest_hash):
+        if not self._is_valid_destination_hash(target_dest_hash):
             error = f"invalid target_destination_hash format: {target_dest_hash}"
             self.logger.error(error)
             self._invoke_response_callback(response_callback, None, error)
@@ -584,20 +658,21 @@ class ProxyManager:
             route["entry_destination_name_str"],
         )
 
-        request_timeout_value = request_timeout_s if request_timeout_s is not None else self.default_request_timeout_s
+        request_timeout_value = (
+            request_timeout_s if request_timeout_s is not None else self.default_request_timeout_s
+        )
         request_timeout_s, timeout_error = self._coerce_request_timeout(request_timeout_value)
         if timeout_error:
             self.logger.error(timeout_error)
             self._invoke_response_callback(response_callback, None, timeout_error)
             return None
 
-        try:
-            payload_bytes = bytes(data_to_send)
-        except Exception as exc:
-            error = f"proxy payload must be bytes-like: {exc}"
+        if not isinstance(data_to_send, (bytes, bytearray, memoryview)):
+            error = "proxy payload must be bytes-like"
             self.logger.error(error)
             self._invoke_response_callback(response_callback, None, error)
             return None
+        payload_bytes = bytes(data_to_send)
 
         if len(payload_bytes) > self.max_payload_size_bytes:
             error = f"proxy payload exceeds max_payload_size_bytes ({self.max_payload_size_bytes})"
@@ -638,8 +713,16 @@ class ProxyManager:
                     route["alias"],
                 )
                 if request_mode == "request":
-                    self._record_proxy_request_phase(route["alias"], request_mode, "proxy_link_setup", "failed", request_state["started_at"])
-                    self._record_proxy_request_terminal(route["alias"], request_mode, "failed", request_state["started_at"])
+                    self._record_proxy_request_phase(
+                        route["alias"],
+                        request_mode,
+                        "proxy_link_setup",
+                        "failed",
+                        request_state["started_at"],
+                    )
+                    self._record_proxy_request_terminal(
+                        route["alias"], request_mode, "failed", request_state["started_at"]
+                    )
                 else:
                     self._record_proxy_request_outcome(route["alias"], request_mode, "failed")
                 self._invoke_response_callback(
@@ -666,11 +749,23 @@ class ProxyManager:
                 exc,
             )
             if request_mode == "request":
-                self._record_proxy_request_phase(route["alias"], request_mode, "proxy_link_setup", "failed", request_state["started_at"])
-                self._record_proxy_request_terminal(route["alias"], request_mode, "failed", request_state["started_at"])
+                self._record_proxy_request_phase(
+                    route["alias"],
+                    request_mode,
+                    "proxy_link_setup",
+                    "failed",
+                    request_state["started_at"],
+                )
+                self._record_proxy_request_terminal(
+                    route["alias"], request_mode, "failed", request_state["started_at"]
+                )
             else:
                 self._record_proxy_request_outcome(route["alias"], request_mode, "failed")
-            self._invoke_response_callback(response_callback, None, f"invalid proxy route identity hash for '{route['alias']}': {exc}")
+            self._invoke_response_callback(
+                response_callback,
+                None,
+                f"invalid proxy route identity hash for '{route['alias']}': {exc}",
+            )
             return None
         except Exception as exc:
             self.logger.error(
@@ -680,8 +775,16 @@ class ProxyManager:
                 exc_info=True,
             )
             if request_mode == "request":
-                self._record_proxy_request_phase(route["alias"], request_mode, "proxy_link_setup", "failed", request_state["started_at"])
-                self._record_proxy_request_terminal(route["alias"], request_mode, "failed", request_state["started_at"])
+                self._record_proxy_request_phase(
+                    route["alias"],
+                    request_mode,
+                    "proxy_link_setup",
+                    "failed",
+                    request_state["started_at"],
+                )
+                self._record_proxy_request_terminal(
+                    route["alias"], request_mode, "failed", request_state["started_at"]
+                )
             else:
                 self._record_proxy_request_outcome(route["alias"], request_mode, "failed")
             self._invoke_response_callback(
@@ -709,11 +812,21 @@ class ProxyManager:
         except Exception as exc:
             self.logger.error("Failed to encode proxy request %s: %s", request_id, exc)
             if request_mode == "request":
-                self._record_proxy_request_phase(route["alias"], request_mode, "proxy_link_setup", "failed", request_state["started_at"])
-                self._record_proxy_request_terminal(route["alias"], request_mode, "failed", request_state["started_at"])
+                self._record_proxy_request_phase(
+                    route["alias"],
+                    request_mode,
+                    "proxy_link_setup",
+                    "failed",
+                    request_state["started_at"],
+                )
+                self._record_proxy_request_terminal(
+                    route["alias"], request_mode, "failed", request_state["started_at"]
+                )
             else:
                 self._record_proxy_request_outcome(route["alias"], request_mode, "failed")
-            self._invoke_response_callback(response_callback, None, f"failed to encode proxy request: {exc}")
+            self._invoke_response_callback(
+                response_callback, None, f"failed to encode proxy request: {exc}"
+            )
             return None
 
         established_event = threading.Event()
@@ -746,20 +859,37 @@ class ProxyManager:
                     self._destination_preview(proxy_entry_dest),
                 )
                 if response_callback is not None:
-                    self._record_proxy_request_phase(route["alias"], request_mode, "proxy_link_setup", "timeout", request_state["started_at"])
-                self._fail_pending_proxy_request(response_callback, request_state, "timeout establishing link to proxy server")
+                    self._record_proxy_request_phase(
+                        route["alias"],
+                        request_mode,
+                        "proxy_link_setup",
+                        "timeout",
+                        request_state["started_at"],
+                    )
+                self._fail_pending_proxy_request(
+                    response_callback, request_state, "timeout establishing link to proxy server"
+                )
                 self._close_link(link_to_proxy)
                 return None
 
             if response_callback is not None:
                 request_state["proxy_link_ready_at"] = time.monotonic()
-                self._record_proxy_request_phase(route["alias"], request_mode, "proxy_link_setup", "success", request_state["started_at"])
+                self._record_proxy_request_phase(
+                    route["alias"],
+                    request_mode,
+                    "proxy_link_setup",
+                    "success",
+                    request_state["started_at"],
+                )
 
             transfer_callback = None
             if response_callback is None:
-                transfer_callback = lambda resource: self._handle_one_way_transfer_concluded(
-                    resource, link_to_proxy, route["alias"], request_mode
-                )
+
+                def transfer_callback(resource):
+                    self._handle_one_way_transfer_concluded(
+                        resource, link_to_proxy, route["alias"], request_mode
+                    )
+
             send_receipt = self._send_link_payload(
                 link_to_proxy,
                 proxy_req_bytes,
@@ -769,7 +899,9 @@ class ProxyManager:
             if send_receipt is False:
                 raise RuntimeError("proxy link rejected request payload")
             if self.metrics_monitor:
-                self.metrics_monitor.increment_proxied_packets(route["alias"], direction="sent_to_proxy")
+                self.metrics_monitor.increment_proxied_packets(
+                    route["alias"], direction="sent_to_proxy"
+                )
             if response_callback is None:
                 if hasattr(link_to_proxy, "send"):
                     self._record_proxy_request_outcome(route["alias"], request_mode, "success")
@@ -802,7 +934,9 @@ class ProxyManager:
                 )
             return request_id
         except Exception as exc:
-            self.logger.error("Error in send_via_proxy for '%s': %s", route["alias"], exc, exc_info=True)
+            self.logger.error(
+                "Error in send_via_proxy for '%s': %s", route["alias"], exc, exc_info=True
+            )
             if link_to_proxy is not None and self._link_is_active(link_to_proxy):
                 try:
                     self._close_link(link_to_proxy)
@@ -811,11 +945,21 @@ class ProxyManager:
             if response_callback is None:
                 self._record_proxy_request_outcome(route["alias"], request_mode, "failed")
             elif request_state["proxy_link_ready_at"] is None:
-                self._record_proxy_request_phase(route["alias"], request_mode, "proxy_link_setup", "failed", request_state["started_at"])
-            self._fail_pending_proxy_request(response_callback, request_state, f"proxy send failed: {exc}")
+                self._record_proxy_request_phase(
+                    route["alias"],
+                    request_mode,
+                    "proxy_link_setup",
+                    "failed",
+                    request_state["started_at"],
+                )
+            self._fail_pending_proxy_request(
+                response_callback, request_state, f"proxy send failed: {exc}"
+            )
             return None
 
-    def _handle_proxy_response_on_client(self, resource, original_response_callback, original_request_id, request_state):
+    def _handle_proxy_response_on_client(
+        self, resource, original_response_callback, original_request_id, request_state
+    ):
         if not RNS_AVAILABLE:
             return
 
@@ -847,7 +991,10 @@ class ProxyManager:
                 )
                 return
 
-            if proxy_response.get("version") != self.proxy_protocol_version or proxy_response.get("type") != "response":
+            if (
+                proxy_response.get("version") != self.proxy_protocol_version
+                or proxy_response.get("type") != "response"
+            ):
                 error_msg = "invalid_proxy_response_envelope"
                 if self._complete_request_state(request_state, "invalid"):
                     self._invoke_response_callback(original_response_callback, None, error_msg)
@@ -856,14 +1003,21 @@ class ProxyManager:
 
             if "error" in proxy_response:
                 error_msg = proxy_response["error"]
-                self.logger.error("Proxy returned error for request_id %s: %s", original_request_id, error_msg)
-                if self._complete_request_state(request_state, self._classify_request_outcome(error_msg)):
+                self.logger.error(
+                    "Proxy returned error for request_id %s: %s", original_request_id, error_msg
+                )
+                if self._complete_request_state(
+                    request_state, self._classify_request_outcome(error_msg)
+                ):
                     self._invoke_response_callback(original_response_callback, None, error_msg)
                 close_link = True
             elif "payload" in proxy_response:
                 try:
                     encoded_payload = proxy_response["payload"]
-                    if not isinstance(encoded_payload, str) or len(encoded_payload) > ((self.max_payload_size_bytes + 2) // 3) * 4:
+                    if (
+                        not isinstance(encoded_payload, str)
+                        or len(encoded_payload) > ((self.max_payload_size_bytes + 2) // 3) * 4
+                    ):
                         raise ValueError("response payload exceeds configured size limit")
                     actual_response_data = base64.b64decode(encoded_payload, validate=True)
                     if len(actual_response_data) > self.max_payload_size_bytes:
@@ -882,7 +1036,9 @@ class ProxyManager:
                     len(actual_response_data),
                 )
                 if self._complete_request_state(request_state, "success"):
-                    self._invoke_response_callback(original_response_callback, actual_response_data, None)
+                    self._invoke_response_callback(
+                        original_response_callback, actual_response_data, None
+                    )
                 close_link = True
             else:
                 self.logger.warning(
@@ -890,7 +1046,9 @@ class ProxyManager:
                     original_request_id,
                 )
                 if self._complete_request_state(request_state, "failed"):
-                    self._invoke_response_callback(original_response_callback, None, "empty_proxy_response")
+                    self._invoke_response_callback(
+                        original_response_callback, None, "empty_proxy_response"
+                    )
                 close_link = True
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             error_msg = f"Proxy response JSON decode error: {exc}"
@@ -922,15 +1080,14 @@ class ProxyManager:
                 if self.metrics_monitor:
                     self.metrics_monitor.set_active_proxy_clients_count(count)
                 destination_to_announce = self.service_destination
-                should_announce = (
-                    destination_to_announce is not None
-                    and (
-                        self.last_announce_at is None
-                        or time.monotonic() - self.last_announce_at >= self.announce_interval_seconds
-                    )
+                should_announce = destination_to_announce is not None and (
+                    self.last_announce_at is None
+                    or time.monotonic() - self.last_announce_at >= self.announce_interval_seconds
                 )
             else:
-                self.logger.debug("ProxyMan (client) check. Config routes:%s", len(self.proxy_routes))
+                self.logger.debug(
+                    "ProxyMan (client) check. Config routes:%s", len(self.proxy_routes)
+                )
                 should_announce = False
                 destination_to_announce = None
         if should_announce:
@@ -938,7 +1095,9 @@ class ProxyManager:
                 destination_to_announce.announce()
                 self.last_announce_at = time.monotonic()
             except Exception as exc:
-                self.logger.error("Unable to announce proxy service destination: %s", exc, exc_info=True)
+                self.logger.error(
+                    "Unable to announce proxy service destination: %s", exc, exc_info=True
+                )
 
     def _shutdown_client_proxy_resources(self):
         self.logger.info("Shutting down client proxy resources.")
@@ -982,7 +1141,9 @@ class ProxyManager:
                 self.logger.error("Error closing client link %s: %s", link_id, exc)
 
         for request_id, target_link in target_links:
-            self.logger.debug("Closing target link for pending request %s during shutdown.", request_id)
+            self.logger.debug(
+                "Closing target link for pending request %s during shutdown.", request_id
+            )
             try:
                 if self._link_is_active(target_link):
                     self._close_link(target_link)
@@ -1097,20 +1258,28 @@ class ProxyManager:
             teardown()
 
     def _record_proxy_request_outcome(self, proxy_alias, mode, outcome):
-        if self.metrics_monitor and hasattr(self.metrics_monitor, "increment_proxy_request_outcome"):
+        if self.metrics_monitor and hasattr(
+            self.metrics_monitor, "increment_proxy_request_outcome"
+        ):
             self.metrics_monitor.increment_proxy_request_outcome(proxy_alias, mode, outcome)
 
     def _record_proxy_request_latency(self, proxy_alias, mode, outcome, started_at):
         if started_at is None:
             return
         if self.metrics_monitor and hasattr(self.metrics_monitor, "record_proxy_request_duration"):
-            self.metrics_monitor.record_proxy_request_duration(proxy_alias, mode, outcome, max(0.0, time.monotonic() - started_at))
+            self.metrics_monitor.record_proxy_request_duration(
+                proxy_alias, mode, outcome, max(0.0, time.monotonic() - started_at)
+            )
 
     def _record_proxy_request_phase(self, proxy_alias, mode, phase, outcome, started_at):
         if started_at is None:
             return
-        if self.metrics_monitor and hasattr(self.metrics_monitor, "record_proxy_request_phase_duration"):
-            self.metrics_monitor.record_proxy_request_phase_duration(proxy_alias, mode, phase, outcome, max(0.0, time.monotonic() - started_at))
+        if self.metrics_monitor and hasattr(
+            self.metrics_monitor, "record_proxy_request_phase_duration"
+        ):
+            self.metrics_monitor.record_proxy_request_phase_duration(
+                proxy_alias, mode, phase, outcome, max(0.0, time.monotonic() - started_at)
+            )
 
     def _record_proxy_request_terminal(self, proxy_alias, mode, outcome, started_at):
         self._record_proxy_request_outcome(proxy_alias, mode, outcome)
@@ -1185,12 +1354,24 @@ class ProxyManager:
             if not established_event.wait(timeout=request_timeout_s):
                 self._clear_pending_request(request_id)
                 self._close_link(target_link)
-                self._record_proxy_request_phase("proxy_node_service", "request", "target_link_setup", "timeout", request_started_at)
-                self._record_proxy_request_terminal("proxy_node_service", "request", "timeout", request_started_at)
-                self._send_proxy_response(client_link, request_id, error="timeout_establishing_target_link")
+                self._record_proxy_request_phase(
+                    "proxy_node_service",
+                    "request",
+                    "target_link_setup",
+                    "timeout",
+                    request_started_at,
+                )
+                self._record_proxy_request_terminal(
+                    "proxy_node_service", "request", "timeout", request_started_at
+                )
+                self._send_proxy_response(
+                    client_link, request_id, error="timeout_establishing_target_link"
+                )
                 return
 
-            self._record_proxy_request_phase("proxy_node_service", "request", "target_link_setup", "success", request_started_at)
+            self._record_proxy_request_phase(
+                "proxy_node_service", "request", "target_link_setup", "success", request_started_at
+            )
             target_request_started_at = time.monotonic()
 
             with self.lock:
@@ -1202,12 +1383,18 @@ class ProxyManager:
             receipt = target_link.request(
                 request_path,
                 data=payload_bytes,
-                response_callback=lambda request_receipt: self._handle_target_request_response(request_id, request_receipt),
-                failed_callback=lambda request_receipt: self._handle_target_request_failure(request_id, request_receipt),
+                response_callback=lambda request_receipt: self._handle_target_request_response(
+                    request_id, request_receipt
+                ),
+                failed_callback=lambda request_receipt: self._handle_target_request_failure(
+                    request_id, request_receipt
+                ),
                 timeout=request_timeout_s,
             )
             if receipt is False:
-                _, _, pending_started_at, pending_target_request_started_at = self._clear_pending_request(request_id)
+                _, _, pending_started_at, pending_target_request_started_at = (
+                    self._clear_pending_request(request_id)
+                )
                 if self._link_is_active(target_link):
                     self._close_link(target_link)
                 self._record_proxy_request_phase(
@@ -1223,10 +1410,19 @@ class ProxyManager:
                     "failed",
                     pending_started_at if pending_started_at is not None else request_started_at,
                 )
-                self._send_proxy_response(client_link, request_id, error="target_request_send_failed")
+                self._send_proxy_response(
+                    client_link, request_id, error="target_request_send_failed"
+                )
         except Exception as exc:
-            self.logger.error("Error forwarding proxy request %s via target link: %s", request_id, exc, exc_info=True)
-            _, target_link, pending_started_at, pending_target_request_started_at = self._clear_pending_request(request_id)
+            self.logger.error(
+                "Error forwarding proxy request %s via target link: %s",
+                request_id,
+                exc,
+                exc_info=True,
+            )
+            _, target_link, pending_started_at, pending_target_request_started_at = (
+                self._clear_pending_request(request_id)
+            )
             if self._link_is_active(target_link):
                 self._close_link(target_link)
             if pending_target_request_started_at is not None:
@@ -1238,7 +1434,13 @@ class ProxyManager:
                     pending_target_request_started_at,
                 )
             else:
-                self._record_proxy_request_phase("proxy_node_service", "request", "target_link_setup", "failed", request_started_at)
+                self._record_proxy_request_phase(
+                    "proxy_node_service",
+                    "request",
+                    "target_link_setup",
+                    "failed",
+                    request_started_at,
+                )
             self._record_proxy_request_terminal(
                 "proxy_node_service",
                 "request",
@@ -1248,57 +1450,121 @@ class ProxyManager:
             self._send_proxy_response(client_link, request_id, error="target_request_error")
 
     def _handle_target_request_response(self, request_id, request_receipt):
-        client_link, target_link, started_at, target_request_started_at = self._clear_pending_request(request_id)
+        client_link, target_link, started_at, target_request_started_at = (
+            self._clear_pending_request(request_id)
+        )
         if client_link is None:
             if self._link_is_active(target_link):
                 self._close_link(target_link)
             return
-        response_payload = request_receipt.get_response() if hasattr(request_receipt, "get_response") else None
+        response_payload = (
+            request_receipt.get_response() if hasattr(request_receipt, "get_response") else None
+        )
         try:
             if response_payload is None:
-                self._record_proxy_request_phase("proxy_node_service", "request", "target_request_service", "failed", target_request_started_at)
-                self._record_proxy_request_terminal("proxy_node_service", "request", "failed", started_at)
+                self._record_proxy_request_phase(
+                    "proxy_node_service",
+                    "request",
+                    "target_request_service",
+                    "failed",
+                    target_request_started_at,
+                )
+                self._record_proxy_request_terminal(
+                    "proxy_node_service", "request", "failed", started_at
+                )
                 self._send_proxy_response(client_link, request_id, error="target_response_missing")
                 return
             if not isinstance(response_payload, (bytes, bytearray, memoryview)):
-                self._record_proxy_request_phase("proxy_node_service", "request", "target_request_service", "invalid", target_request_started_at)
-                self._record_proxy_request_terminal("proxy_node_service", "request", "invalid", started_at)
-                self._send_proxy_response(client_link, request_id, error="target_response_not_bytes")
+                self._record_proxy_request_phase(
+                    "proxy_node_service",
+                    "request",
+                    "target_request_service",
+                    "invalid",
+                    target_request_started_at,
+                )
+                self._record_proxy_request_terminal(
+                    "proxy_node_service", "request", "invalid", started_at
+                )
+                self._send_proxy_response(
+                    client_link, request_id, error="target_response_not_bytes"
+                )
                 return
             response_payload = bytes(response_payload)
             if len(response_payload) > self.max_payload_size_bytes:
-                self._record_proxy_request_phase("proxy_node_service", "request", "target_request_service", "failed", target_request_started_at)
-                self._record_proxy_request_terminal("proxy_node_service", "request", "failed", started_at)
-                self._send_proxy_response(client_link, request_id, error="response_payload_too_large")
+                self._record_proxy_request_phase(
+                    "proxy_node_service",
+                    "request",
+                    "target_request_service",
+                    "failed",
+                    target_request_started_at,
+                )
+                self._record_proxy_request_terminal(
+                    "proxy_node_service", "request", "failed", started_at
+                )
+                self._send_proxy_response(
+                    client_link, request_id, error="response_payload_too_large"
+                )
                 return
             self._send_proxy_response(client_link, request_id, payload=response_payload)
             if self.metrics_monitor:
-                self.metrics_monitor.increment_proxied_packets("proxy_node_service", direction="response_to_client")
-            self._record_proxy_request_phase("proxy_node_service", "request", "target_request_service", "success", target_request_started_at)
-            self._record_proxy_request_terminal("proxy_node_service", "request", "success", started_at)
+                self.metrics_monitor.increment_proxied_packets(
+                    "proxy_node_service", direction="response_to_client"
+                )
+            self._record_proxy_request_phase(
+                "proxy_node_service",
+                "request",
+                "target_request_service",
+                "success",
+                target_request_started_at,
+            )
+            self._record_proxy_request_terminal(
+                "proxy_node_service", "request", "success", started_at
+            )
         finally:
             if self._link_is_active(target_link):
                 self._close_link(target_link)
 
     def _handle_target_request_failure(self, request_id, request_receipt):
-        client_link, target_link, started_at, target_request_started_at = self._clear_pending_request(request_id)
+        client_link, target_link, started_at, target_request_started_at = (
+            self._clear_pending_request(request_id)
+        )
         if client_link is None:
             if self._link_is_active(target_link):
                 self._close_link(target_link)
             return
-        status = request_receipt.get_status() if hasattr(request_receipt, "get_status") else "unknown"
-        self._record_proxy_request_phase("proxy_node_service", "request", "target_request_service", "failed", target_request_started_at)
+        status = (
+            request_receipt.get_status() if hasattr(request_receipt, "get_status") else "unknown"
+        )
+        self._record_proxy_request_phase(
+            "proxy_node_service",
+            "request",
+            "target_request_service",
+            "failed",
+            target_request_started_at,
+        )
         self._record_proxy_request_terminal("proxy_node_service", "request", "failed", started_at)
         self._send_proxy_response(client_link, request_id, error=f"target_request_failed:{status}")
         if self._link_is_active(target_link):
             self._close_link(target_link)
 
     def _handle_target_link_closed(self, request_id, target_link):
-        client_link, pending_target_link, started_at, target_request_started_at = self._clear_pending_request(request_id)
+        client_link, pending_target_link, started_at, target_request_started_at = (
+            self._clear_pending_request(request_id)
+        )
         if client_link is not None:
-            self._record_proxy_request_phase("proxy_node_service", "request", "target_request_service", "closed", target_request_started_at)
-            self._record_proxy_request_terminal("proxy_node_service", "request", "closed", started_at)
-            self._send_proxy_response(client_link, request_id, error="target_link_closed_before_response")
+            self._record_proxy_request_phase(
+                "proxy_node_service",
+                "request",
+                "target_request_service",
+                "closed",
+                target_request_started_at,
+            )
+            self._record_proxy_request_terminal(
+                "proxy_node_service", "request", "closed", started_at
+            )
+            self._send_proxy_response(
+                client_link, request_id, error="target_link_closed_before_response"
+            )
         if pending_target_link is not target_link and self._link_is_active(pending_target_link):
             self._close_link(pending_target_link)
 
@@ -1308,7 +1574,11 @@ class ProxyManager:
             self._destination_preview(getattr(link, "destination", None)),
         )
         if response_callback is not None and self._complete_request_state(request_state, "closed"):
-            self._invoke_response_callback(response_callback, None, f"proxy link closed before response for request {request_id}")
+            self._invoke_response_callback(
+                response_callback,
+                None,
+                f"proxy link closed before response for request {request_id}",
+            )
 
     def _handle_proxy_response_timeout(self, link, request_id, response_callback, request_state):
         if not self._complete_request_state(request_state, "timeout"):
@@ -1359,12 +1629,23 @@ class ProxyManager:
     def _is_valid_request_path(request_path):
         return isinstance(request_path, str) and request_path.strip() != ""
 
+    @staticmethod
+    def _is_valid_destination_hash(destination_hash):
+        return (
+            isinstance(destination_hash, str)
+            and RNS_HASH_REGEX.fullmatch(destination_hash) is not None
+        )
+
     def _select_proxy_route(self, proxy_alias, target_destination_name):
         if proxy_alias is not None:
-            route = next((route for route in self.proxy_routes if route["alias"] == proxy_alias), None)
+            route = next(
+                (route for route in self.proxy_routes if route["alias"] == proxy_alias), None
+            )
             if route is None:
                 return None, f"proxy route '{proxy_alias}' not found"
-            allowed, error, denial_reason = self._route_allows_target(route, target_destination_name)
+            allowed, error, denial_reason = self._route_allows_target(
+                route, target_destination_name
+            )
             if not allowed:
                 self._record_proxy_policy_denial(route["alias"], denial_reason)
                 return None, error
@@ -1373,7 +1654,9 @@ class ProxyManager:
         matching_routes = []
         rejected_routes = []
         for route in self.proxy_routes:
-            allowed, error, denial_reason = self._route_allows_target(route, target_destination_name)
+            allowed, error, denial_reason = self._route_allows_target(
+                route, target_destination_name
+            )
             if allowed:
                 matching_routes.append(route)
             else:
@@ -1435,7 +1718,11 @@ class ProxyManager:
 
     @staticmethod
     def _is_valid_destination_name(destination_name):
-        if not isinstance(destination_name, str) or not destination_name or len(destination_name) > 255:
+        if (
+            not isinstance(destination_name, str)
+            or not destination_name
+            or len(destination_name) > 255
+        ):
             return False
         components = destination_name.split(".")
         return all(DESTINATION_COMPONENT_REGEX.fullmatch(component) for component in components)

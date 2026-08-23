@@ -54,7 +54,22 @@
                 "rtt_probe_timeout_seconds": {"type": "number", "minimum": 0.1},
                 "max_paths_to_consider": {"type": "integer", "minimum": 1}
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "enabled": {"const": true},
+                            "default_metric": {"const": "custom"}
+                        },
+                        "required": ["enabled", "default_metric"]
+                    },
+                    "then": {
+                        "properties": {"custom_metrics_module": {"type": "string", "minLength": 1}},
+                        "required": ["custom_metrics_module"]
+                    }
+                }
+            ]
         },
         "destination_proxying": {
             "type": "object",
@@ -109,7 +124,7 @@
                     }
                 },
                 "max_payload_size_bytes": {"type": "integer", "minimum": 1},
-                "default_request_timeout_seconds": {"type": "number", "minimum": 0.001},
+                "default_request_timeout_seconds": {"type": "number", "minimum": 0.001, "maximum": 3600},
                 "max_active_clients": {"type": "integer", "minimum": 1},
                 "max_pending_requests": {"type": "integer", "minimum": 1},
                 "proxy_protocol_version": {"type": "string", "const": "1.0"}
@@ -117,20 +132,28 @@
             "additionalProperties": false,
             "allOf": [
                 {
-                    "if": {"properties": {"is_proxy_node": {"const": true}}, "required": ["is_proxy_node"]},
+                    "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
                     "then": {
-                        "anyOf": [
-                            {"properties": {"allow_all_targets_on_proxy_node": {"const": true}}, "required": ["allow_all_targets_on_proxy_node"]},
-                            {"properties": {"inbound_target_policies": {"minItems": 1}}, "required": ["inbound_target_policies"]}
+                        "required": ["is_proxy_node"],
+                        "allOf": [
+                            {
+                                "if": {"properties": {"is_proxy_node": {"const": true}}, "required": ["is_proxy_node"]},
+                                "then": {
+                                    "anyOf": [
+                                        {"properties": {"allow_all_targets_on_proxy_node": {"const": true}}, "required": ["allow_all_targets_on_proxy_node"]},
+                                        {"properties": {"inbound_target_policies": {"minItems": 1}}, "required": ["inbound_target_policies"]}
+                                    ]
+                                }
+                            },
+                            {
+                                "if": {"properties": {"is_proxy_node": {"const": false}}, "required": ["is_proxy_node"]},
+                                "then": {"properties": {"proxy_routes": {"minItems": 1}}, "required": ["proxy_routes"]}
+                            }
                         ]
                     }
-                },
-                {
-                    "if": {"properties": {"is_proxy_node": {"const": false}}, "required": ["is_proxy_node"]},
-                    "then": {"properties": {"proxy_routes": {"minItems": 1}}, "required": ["proxy_routes"]}
                 }
             ],
-            "required": ["enabled", "is_proxy_node"]
+            "required": ["enabled"]
         },
         "monitoring": {
             "type": "object",

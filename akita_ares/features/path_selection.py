@@ -1,5 +1,6 @@
 import importlib
 import math
+import threading
 import time
 
 from akita_ares.core.logger import get_logger
@@ -27,6 +28,7 @@ class PathSelector:
         self.rns_instance = rns_instance
         self.metrics_monitor = metrics_monitor
         self.logger = get_logger("Feature.PathSelector")
+        self._cache_lock = threading.RLock()
         self.path_metrics_cache = {}
         self.known_paths = {}
         self.known_path_last_seen = {}
@@ -40,6 +42,7 @@ class PathSelector:
         metric_type = self.config.get("default_metric", "hops")
         if metric_type not in self.SUPPORTED_METRICS:
             raise ValueError(f"Unsupported path metric: {metric_type!r}")
+        previous_metric_type = getattr(self, "default_metric_type", None)
         self.default_metric_type = metric_type
         self.metric_update_interval = float(self.config.get("metric_update_interval_seconds", 60))
         self.rtt_probe_timeout = float(self.config.get("rtt_probe_timeout_seconds", 5))
@@ -54,6 +57,11 @@ class PathSelector:
         self.custom_metrics_module_path = module_path
         if module_path != old_path or (module_path and self.custom_metric_evaluator is None):
             self._load_custom_metrics_module()
+        if previous_metric_type and previous_metric_type != metric_type:
+            with self._cache_lock:
+                destination_hashes = list(self.known_paths)
+                self.path_metrics_cache.clear()
+            self._remove_metric_series(destination_hashes, previous_metric_type)
         self.logger.info(
             "PathSelector config: metric=%s, update_interval=%ss",
             self.default_metric_type,
@@ -103,7 +111,9 @@ class PathSelector:
         )
         normalized = []
         for component in components:
-            normalized.append(component.hex() if isinstance(component, bytes) else str(component or ""))
+            normalized.append(
+                component.hex() if isinstance(component, bytes) else str(component or "")
+            )
         return "|".join(normalized)
 
     @staticmethod
@@ -171,16 +181,20 @@ class PathSelector:
                 if result is False or result is None:
                     return math.inf
                 reported_rtt = getattr(result, "get_rtt", lambda: None)()
-                return float(reported_rtt) if reported_rtt is not None else time.monotonic() - started_at
+                return (
+                    float(reported_rtt)
+                    if reported_rtt is not None
+                    else time.monotonic() - started_at
+                )
             except (OSError, TimeoutError, ValueError, TypeError) as exc:
                 self.logger.warning("RTT probe failed for %s: %s", self._path_id(path_info), exc)
         return math.inf
 
     def _get_metric_for_path(self, path_info, metric_type):
         path_id = self._path_id(path_info)
-        cache = self.path_metrics_cache.setdefault(path_id, {})
         now = time.monotonic()
-        cached = cache.get(metric_type)
+        with self._cache_lock:
+            cached = self.path_metrics_cache.get(path_id, {}).get(metric_type)
         if cached and now - cached["timestamp"] < self.metric_update_interval / 2:
             return cached["value"]
 
@@ -205,7 +219,9 @@ class PathSelector:
             value = math.inf
         if not math.isfinite(value):
             value = math.inf
-        cache[metric_type] = {"value": value, "timestamp": now}
+        with self._cache_lock:
+            cache = self.path_metrics_cache.setdefault(path_id, {})
+            cache[metric_type] = {"value": value, "timestamp": now}
         return value
 
     def get_best_path(self, dest_hash_hex):
@@ -218,8 +234,9 @@ class PathSelector:
             return None
 
         now = time.monotonic()
-        self.known_paths[dest_hash_hex] = paths
-        self.known_path_last_seen[dest_hash_hex] = now
+        with self._cache_lock:
+            self.known_paths[dest_hash_hex] = paths
+            self.known_path_last_seen[dest_hash_hex] = now
         evaluated = []
         for path_info in paths[: self.max_paths_to_consider]:
             metric_value = self._get_metric_for_path(path_info, self.default_metric_type)
@@ -255,31 +272,47 @@ class PathSelector:
             return
         self._last_metric_update_time = now
         stale_after = self.metric_update_interval * 10
-        for destination_hash in list(self.known_paths):
-            if now - self.known_path_last_seen.get(destination_hash, 0) > stale_after:
-                for path in self.known_paths.pop(destination_hash, []):
-                    self.path_metrics_cache.pop(self._path_id(path), None)
-                self.known_path_last_seen.pop(destination_hash, None)
+        with self._cache_lock:
+            destination_hashes = list(self.known_paths)
+        for destination_hash in destination_hashes:
+            with self._cache_lock:
+                is_stale = now - self.known_path_last_seen.get(destination_hash, 0) > stale_after
+                if is_stale:
+                    stale_paths = self.known_paths.pop(destination_hash, [])
+                    metric_types = set()
+                    for path in stale_paths:
+                        cached_metrics = self.path_metrics_cache.pop(self._path_id(path), {})
+                        metric_types.update(cached_metrics)
+                    self.known_path_last_seen.pop(destination_hash, None)
+            if is_stale:
+                self._remove_metric_series([destination_hash], metric_types)
                 continue
             self.get_best_path(destination_hash)
 
     def influence_rns_routing(self, dest_hash_hex, chosen_path_id):
         """Request rediscovery on a selected interface when the adapter exposes it."""
         destination_hash = self._validate_destination_hash(dest_hash_hex)
-        chosen_path = next(
-            (
-                path
-                for path in self.known_paths.get(dest_hash_hex, [])
-                if self._path_id(path) == str(chosen_path_id)
-            ),
-            None,
-        )
+        with self._cache_lock:
+            chosen_path = next(
+                (
+                    path
+                    for path in self.known_paths.get(dest_hash_hex, [])
+                    if self._path_id(path) == str(chosen_path_id)
+                ),
+                None,
+            )
         if chosen_path is None:
-            self.logger.error("Unknown path %s for destination %s", chosen_path_id, dest_hash_hex[:8])
+            self.logger.error(
+                "Unknown path %s for destination %s", chosen_path_id, dest_hash_hex[:8]
+            )
             return False
-        interface = self._field(chosen_path, "interface_object") or self._field(chosen_path, "interface")
+        interface = self._field(chosen_path, "interface_object") or self._field(
+            chosen_path, "interface"
+        )
         if interface is None or isinstance(interface, str):
-            self.logger.error("Path %s does not expose a usable Reticulum interface object", chosen_path_id)
+            self.logger.error(
+                "Path %s does not expose a usable Reticulum interface object", chosen_path_id
+            )
             return False
         try:
             drop_path = getattr(self.rns_instance, "drop_path", None)
@@ -288,10 +321,34 @@ class PathSelector:
             RNS.Transport.request_path(destination_hash, on_interface=interface)
             return True
         except Exception as exc:
-            self.logger.error("Unable to request selected route %s: %s", chosen_path_id, exc, exc_info=True)
+            self.logger.error(
+                "Unable to request selected route %s: %s", chosen_path_id, exc, exc_info=True
+            )
             return False
 
     def stop(self):
-        self.known_paths.clear()
-        self.known_path_last_seen.clear()
-        self.path_metrics_cache.clear()
+        with self._cache_lock:
+            destination_hashes = list(self.known_paths)
+            metric_types = {
+                metric_type
+                for cached_metrics in self.path_metrics_cache.values()
+                for metric_type in cached_metrics
+            }
+            self.known_paths.clear()
+            self.known_path_last_seen.clear()
+            self.path_metrics_cache.clear()
+        self._remove_metric_series(destination_hashes, metric_types)
+
+    def _remove_metric_series(self, destination_hashes, metric_types):
+        if isinstance(metric_types, str):
+            metric_types = [metric_types]
+        gauge = getattr(self.metrics_monitor, "path_selection_chosen_metric_value", None)
+        remove = getattr(gauge, "remove", None)
+        if not callable(remove):
+            return
+        for destination_hash in destination_hashes:
+            for metric_type in metric_types:
+                try:
+                    remove(destination_hash, metric_type)
+                except KeyError:
+                    continue

@@ -2,11 +2,10 @@ import copy
 import json
 import os
 
-from jsonschema import validators
 from jsonschema import exceptions as jsonschema_exceptions
+from jsonschema import validators
 
 from .logger import get_logger
-
 
 logger = get_logger("ConfigManager")
 

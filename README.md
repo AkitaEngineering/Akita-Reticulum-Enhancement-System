@@ -123,6 +123,9 @@ Run the full suite with:
 
 ```bash
 python -m pytest -q
+python -m ruff check .
+python -m ruff format --check akita_ares tests
+python -m build
 ```
 
 ## Project Layout
