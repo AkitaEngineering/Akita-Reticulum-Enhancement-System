@@ -1,4 +1,5 @@
 {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "logging": {
@@ -23,6 +24,7 @@
             "type": "object",
             "properties": {
                 "rns_config_path": {"type": "string"},
+                "identity_path": {"type": ["string", "null"]},
                 "enable_transport_node_features": {"type": "boolean"},
                 "config_schema_path": {"type": ["string", "null"]},
                 "main_loop_sleep_interval": {"type": "integer", "minimum": 1}
@@ -63,36 +65,85 @@
                     "items": {
                         "type": "object",
                         "properties": {
-                            "alias": {"type": "string"},
-                            "entry_destination_name": {"type": "string"},
+                            "alias": {"type": "string", "minLength": 1},
+                            "entry_destination_name": {"type": "string", "pattern": "^[^\\s.]+(?:\\.[^\\s.]+)+$"},
                             "exit_node_identity_hash": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
-                            "target_network_prefix": {"type": "string"},
+                            "target_network_prefix": {"type": "string", "pattern": "^[^\\s.]+(?:\\.[^\\s.]+)*$"},
                             "allow_all_targets": {"type": "boolean"},
-                            "allowed_target_aspects": {"type": "array", "items": {"type": "string"}}
+                            "allowed_target_aspects": {"type": "array", "items": {"type": "string", "pattern": "^[^\\s.]+$"}, "uniqueItems": true}
                         },
                         "required": ["alias", "entry_destination_name", "exit_node_identity_hash"],
-                        "additionalProperties": false
+                        "additionalProperties": false,
+                        "anyOf": [
+                            {"properties": {"allow_all_targets": {"const": true}}, "required": ["allow_all_targets"]},
+                            {"required": ["target_network_prefix"]},
+                            {"properties": {"allowed_target_aspects": {"minItems": 1}}, "required": ["allowed_target_aspects"]}
+                        ]
                     }
                 },
                 "is_proxy_node": {"type": "boolean"},
-                "listen_on_aspect": {"type": "string"},
+                "listen_on_aspect": {"type": "string", "pattern": "^[^\\s.]+$"},
+                "listen_destination_name": {"type": "string", "pattern": "^[^\\s.]+(?:\\.[^\\s.]+)+$"},
+                "announce_interval_seconds": {"type": "number", "minimum": 30},
+                "allow_all_targets_on_proxy_node": {"type": "boolean"},
+                "inbound_target_policies": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "minLength": 1},
+                            "target_network_prefix": {"type": "string", "minLength": 1},
+                            "allow_all_targets": {"type": "boolean"},
+                            "allowed_target_aspects": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                                "uniqueItems": true
+                            }
+                        },
+                        "additionalProperties": false,
+                        "anyOf": [
+                            {"properties": {"allow_all_targets": {"const": true}}, "required": ["allow_all_targets"]},
+                            {"required": ["target_network_prefix"]},
+                            {"properties": {"allowed_target_aspects": {"minItems": 1}}, "required": ["allowed_target_aspects"]}
+                        ]
+                    }
+                },
                 "max_payload_size_bytes": {"type": "integer", "minimum": 1},
                 "default_request_timeout_seconds": {"type": "number", "minimum": 0.001},
-                "proxy_protocol_version": {"type": "string"}
+                "max_active_clients": {"type": "integer", "minimum": 1},
+                "max_pending_requests": {"type": "integer", "minimum": 1},
+                "proxy_protocol_version": {"type": "string", "const": "1.0"}
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+                {
+                    "if": {"properties": {"is_proxy_node": {"const": true}}, "required": ["is_proxy_node"]},
+                    "then": {
+                        "anyOf": [
+                            {"properties": {"allow_all_targets_on_proxy_node": {"const": true}}, "required": ["allow_all_targets_on_proxy_node"]},
+                            {"properties": {"inbound_target_policies": {"minItems": 1}}, "required": ["inbound_target_policies"]}
+                        ]
+                    }
+                },
+                {
+                    "if": {"properties": {"is_proxy_node": {"const": false}}, "required": ["is_proxy_node"]},
+                    "then": {"properties": {"proxy_routes": {"minItems": 1}}, "required": ["proxy_routes"]}
+                }
+            ],
+            "required": ["enabled", "is_proxy_node"]
         },
         "monitoring": {
             "type": "object",
             "properties": {
                 "enabled": {"type": "boolean"},
                 "prometheus_port": {"type": "integer", "minimum": 1024, "maximum": 65535},
-                "listen_host": {"type": "string"},
-                "metrics_prefix": {"type": "string"},
+                "listen_host": {"type": "string", "minLength": 1},
+                "metrics_prefix": {"type": "string", "pattern": "^[a-zA-Z_:][a-zA-Z0-9_:]*$"},
                 "enable_health_endpoint": {"type": "boolean"}
             },
             "additionalProperties": false
         }
     },
-    "additionalProperties": true
+    "required": ["ares_core"],
+    "additionalProperties": false
 }

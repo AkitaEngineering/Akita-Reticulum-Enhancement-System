@@ -1,9 +1,12 @@
+import threading
 import unittest, time
 from akita_ares.core.circuit_breaker import CircuitBreaker, CircuitBreakerState, CircuitBreakerOpenException
 from akita_ares.core.logger import setup_logging 
 setup_logging(level='CRITICAL', console_output=False, log_file=None) 
 def mock_operation(fail=False, fail_times=0, success_after=0):
-    if not hasattr(mock_operation, 'call_count'): mock_operation.call_count = 0; mock_operation.call_count += 1
+    if not hasattr(mock_operation, 'call_count'):
+        mock_operation.call_count = 0
+    mock_operation.call_count += 1
     if fail: raise ValueError("Failed intentionally")
     if fail_times > 0 and mock_operation.call_count <= fail_times: raise ValueError(f"Failed intentionally ({mock_operation.call_count}/{fail_times})")
     if success_after > 0 and mock_operation.call_count <= success_after: raise ValueError(f"Failed intentionally until call {success_after+1}")
@@ -18,3 +21,24 @@ class TestCircuitBreaker(unittest.TestCase):
     def test_half_open_success_closes_circuit(self): rt = 0.1; cb = CircuitBreaker(1, rt); self.assertRaises(ValueError, cb.execute, mock_operation, fail=True); time.sleep(rt * 1.1); mock_operation.call_count = 0; result = cb.execute(mock_operation); self.assertEqual(result, "Success"); self.assertEqual(cb.state, CircuitBreakerState.CLOSED); self.assertEqual(cb.failure_count, 0)
     def test_half_open_failure_reopens_circuit(self): rt = 0.1; cb = CircuitBreaker(1, rt); self.assertRaises(ValueError, cb.execute, mock_operation, fail=True); time.sleep(rt * 1.1); mock_operation.call_count = 0; self.assertRaises(ValueError, cb.execute, mock_operation, fail=True); self.assertEqual(cb.state, CircuitBreakerState.OPEN); self.assertEqual(cb.failure_count, 2)
     def test_reset_after_success_in_closed(self): cb = CircuitBreaker(3, 10); self.assertRaises(ValueError, cb.execute, mock_operation, fail=True); self.assertEqual(cb.failure_count, 1); result = cb.execute(mock_operation); self.assertEqual(result, "Success"); self.assertEqual(cb.failure_count, 0); self.assertRaises(ValueError, cb.execute, mock_operation, fail=True); self.assertRaises(ValueError, cb.execute, mock_operation, fail=True); self.assertEqual(cb.failure_count, 2); self.assertEqual(cb.state, CircuitBreakerState.CLOSED)
+    def test_only_one_half_open_probe_runs(self):
+        cb = CircuitBreaker(1, 0)
+        with self.assertRaises(ValueError):
+            cb.execute(mock_operation, fail=True)
+        started = threading.Event()
+        release = threading.Event()
+
+        def probe():
+            started.set()
+            release.wait(1)
+            return "Success"
+
+        worker = threading.Thread(target=lambda: cb.execute(probe))
+        worker.start()
+        self.assertTrue(started.wait(1))
+        with self.assertRaises(CircuitBreakerOpenException):
+            cb.execute(mock_operation)
+        release.set()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(cb.state, CircuitBreakerState.CLOSED)

@@ -1,7 +1,9 @@
+import threading
 import time
-import logging
 from enum import Enum
+
 from akita_ares.core.logger import get_logger
+
 
 logger = get_logger("CircuitBreaker")
 
@@ -13,96 +15,97 @@ class CircuitBreakerState(Enum):
 
 
 class CircuitBreaker:
-    """Simple circuit breaker.
-
-    Attributes expected by tests:
-      - state: CircuitBreakerState
-      - failure_count: int
-      - last_failure_time: float | None
-      - recovery_timeout_seconds: float
-    """
+    """Thread-safe circuit breaker with a single half-open probe."""
 
     def __init__(self, failure_threshold: int, recovery_timeout_seconds: float, name: str = "DefCB"):
         self.failure_threshold = int(failure_threshold)
         self.recovery_timeout_seconds = float(recovery_timeout_seconds)
-        self.name = name
-
+        if self.failure_threshold < 1:
+            raise ValueError("failure_threshold must be at least 1")
+        if self.recovery_timeout_seconds < 0:
+            raise ValueError("recovery_timeout_seconds cannot be negative")
+        self.name = str(name)
         self.state = CircuitBreakerState.CLOSED
         self.failure_count = 0
         self.last_failure_time = None
-
-        logger.info(f"CB '{self.name}' init: thr={self.failure_threshold}, t/o={self.recovery_timeout_seconds}s")
+        self._half_open_call_in_flight = False
+        self._lock = threading.Lock()
+        logger.info(
+            "Circuit breaker '%s' initialized: threshold=%s, recovery_timeout=%ss",
+            self.name,
+            self.failure_threshold,
+            self.recovery_timeout_seconds,
+        )
 
     def execute(self, func, *args, **kwargs):
-        """Execute `func`. Behavior:
-        - If OPEN and recovery timeout hasn't elapsed -> raise CircuitBreakerOpenException
-        - If OPEN and timeout elapsed -> move to HALF_OPEN and try one call
-        - In HALF_OPEN a failure re-opens the circuit, success closes it
-        - In CLOSED failures increment failure_count and open circuit when threshold reached
-        """
-        # If OPEN, check timeout
-        if self.state == CircuitBreakerState.OPEN:
-            if self.last_failure_time and (time.monotonic() - self.last_failure_time) > self.recovery_timeout_seconds:
-                self._to_half_open()
-            else:
-                raise CircuitBreakerOpenException(f"CB '{self.name}' is OPEN")
+        if not callable(func):
+            raise TypeError("func must be callable")
 
-        # HALF_OPEN: single trial
-        if self.state == CircuitBreakerState.HALF_OPEN:
-            try:
-                result = func(*args, **kwargs)
-            except Exception as exc:
-                self._record_failure()
-                logger.error(f"CB '{self.name}' HALF_OPEN trial failed: {exc}")
-                raise
-            else:
-                self._record_success()
-                return result
+        with self._lock:
+            if self.state == CircuitBreakerState.OPEN:
+                elapsed = (
+                    time.monotonic() - self.last_failure_time
+                    if self.last_failure_time is not None
+                    else 0
+                )
+                if elapsed >= self.recovery_timeout_seconds:
+                    self._to_half_open_locked()
+                else:
+                    raise CircuitBreakerOpenException(f"CB '{self.name}' is OPEN")
 
-        # CLOSED: normal operation
+            is_half_open_probe = self.state == CircuitBreakerState.HALF_OPEN
+            if is_half_open_probe:
+                if self._half_open_call_in_flight:
+                    raise CircuitBreakerOpenException(
+                        f"CB '{self.name}' is HALF_OPEN and its probe is already running"
+                    )
+                self._half_open_call_in_flight = True
+
         try:
             result = func(*args, **kwargs)
         except Exception:
-            self._record_failure()
-            logger.warning(f"CB '{self.name}' caught exception; failure_count={self.failure_count}")
+            with self._lock:
+                self._record_failure_locked(force_open=is_half_open_probe)
             raise
         else:
-            # on success while CLOSED, reset failure_count
-            if self.state == CircuitBreakerState.CLOSED and self.failure_count > 0:
-                self.failure_count = 0
-                self.last_failure_time = None
-                logger.info(f"CB '{self.name}' success — failure counter reset")
+            with self._lock:
+                if is_half_open_probe:
+                    self._to_closed_locked()
+                else:
+                    self.failure_count = 0
+                    self.last_failure_time = None
             return result
 
-    # --- internal helpers -------------------------------------------------
-    def _record_success(self):
-        if self.state == CircuitBreakerState.HALF_OPEN:
-            self._to_closed()
-        elif self.state == CircuitBreakerState.CLOSED:
-            self.failure_count = 0
-            self.last_failure_time = None
-
-    def _record_failure(self):
+    def _record_failure_locked(self, force_open=False):
         self.failure_count += 1
         self.last_failure_time = time.monotonic()
-        logger.warning(f"CB '{self.name}' failure. Count: {self.failure_count}/{self.failure_threshold}")
-        if self.failure_count >= self.failure_threshold and self.state != CircuitBreakerState.OPEN:
-            self._to_open()
+        self._half_open_call_in_flight = False
+        logger.warning(
+            "CB '%s' failure. Count: %s/%s",
+            self.name,
+            self.failure_count,
+            self.failure_threshold,
+        )
+        if force_open or self.failure_count >= self.failure_threshold:
+            self._to_open_locked()
 
-    def _to_closed(self):
-        logger.info(f"CB '{self.name}' -> CLOSED")
+    def _to_closed_locked(self):
+        logger.info("CB '%s' -> CLOSED", self.name)
         self.state = CircuitBreakerState.CLOSED
         self.failure_count = 0
         self.last_failure_time = None
+        self._half_open_call_in_flight = False
 
-    def _to_open(self):
-        logger.warning(f"CB '{self.name}' -> OPEN for {self.recovery_timeout_seconds}s")
+    def _to_open_locked(self):
+        logger.warning("CB '%s' -> OPEN for %ss", self.name, self.recovery_timeout_seconds)
         self.state = CircuitBreakerState.OPEN
+        self._half_open_call_in_flight = False
 
-    def _to_half_open(self):
-        logger.info(f"CB '{self.name}' -> HALF_OPEN")
+    def _to_half_open_locked(self):
+        logger.info("CB '%s' -> HALF_OPEN", self.name)
         self.state = CircuitBreakerState.HALF_OPEN
+        self._half_open_call_in_flight = False
 
 
 class CircuitBreakerOpenException(Exception):
-    pass
+    """Raised when a circuit breaker is not accepting work."""

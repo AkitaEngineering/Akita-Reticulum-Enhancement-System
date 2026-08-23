@@ -16,6 +16,11 @@ class TestConfigManager(unittest.TestCase):
     def test_load_valid_config_no_schema(self): manager = ConfigManager(self.config_path, schema_fp=None); self.assertEqual(manager.get_config(), self.valid_config_data); self.assertIsNone(manager.schema)
     def test_load_valid_config_with_valid_schema(self): manager = ConfigManager(self.config_path, schema_fp=self.schema_path); self.assertEqual(manager.get_config(), self.valid_config_data); self.assertIsNotNone(manager.schema)
     def test_load_missing_config_file(self): missing_path = os.path.join(self.temp_dir.name, 'nonexistent.json'); manager = ConfigManager(missing_path); self.assertEqual(manager.get_config(), {})
+    def test_require_valid_rejects_missing_config(self):
+        missing_path = os.path.join(self.temp_dir.name, 'nonexistent.json')
+        manager = ConfigManager(missing_path)
+        with self.assertRaises(ValueError):
+            manager.require_valid()
     def test_load_invalid_json_config(self): manager = ConfigManager(self.invalid_json_path); self.assertEqual(manager.get_config(), {})
     def test_load_config_violating_schema(self):
         invalid_config_path = os.path.join(self.temp_dir.name, 'violating_config.json')
@@ -25,6 +30,11 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(manager.get_config(), {})
 
     def test_load_config_missing_schema_file(self): missing_schema_path = os.path.join(self.temp_dir.name, 'nonexistent_schema.json'); manager = ConfigManager(self.config_path, schema_fp=missing_schema_path); self.assertEqual(manager.get_config(), self.valid_config_data); self.assertIsNone(manager.schema)
+    def test_require_valid_rejects_missing_schema(self):
+        missing_schema_path = os.path.join(self.temp_dir.name, 'nonexistent_schema.json')
+        manager = ConfigManager(self.config_path, schema_fp=missing_schema_path)
+        with self.assertRaises(ValueError):
+            manager.require_valid(require_schema=True)
     def test_invalid_schema_file_raises(self):
         invalid_schema_path = os.path.join(self.temp_dir.name, 'invalid_schema.json')
         with open(invalid_schema_path, 'w') as f:

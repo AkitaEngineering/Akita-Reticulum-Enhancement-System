@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77,<82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akita-ares"
+version = "0.1.5"
+description = "Operational hardening and observability for Reticulum applications"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+dependencies = [
+    "rns>=1.3.4,<1.4",
+    "jsonschema>=4.26,<5",
+    "prometheus-client>=0.25,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=9,<10"]
+
+[project.scripts]
+akita-ares = "akita_ares.main:main_entry"
+
+[tool.setuptools.packages.find]
+include = ["akita_ares*"]
+
+[tool.setuptools.data-files]
+"share/akita-ares/examples" = ["examples/sample_config.json", "examples/config_schema.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"

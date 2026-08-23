@@ -12,6 +12,7 @@ from unittest.mock import patch
 from akita_ares.core.logger import setup_logging
 from akita_ares.features.monitoring import MetricsMonitor
 from akita_ares.features.path_selection import PathSelector
+from akita_ares.features import proxying
 from akita_ares.features.proxying import ProxyManager
 from akita_ares.features.request_retries import RetryManager
 
@@ -148,6 +149,8 @@ class _FakeClientProxyLink:
         message = json.loads(data.decode('utf-8'))
         _FakeClientProxyLink.last_sent_message = message
         response = {
+            'version': '1.0',
+            'type': 'response',
             'request_id': message['request_id'],
             'payload': base64.b64encode(b'pong').decode('utf-8'),
         }
@@ -189,6 +192,13 @@ class _SlowClientProxyLink:
         self.active = False
         if self.closed_callback is not None:
             self.closed_callback(self)
+
+
+class _NoResponseClientProxyLink(_SlowClientProxyLink):
+    def __init__(self, destination, established_callback=None, closed_callback=None, owner=None, peer_pub_bytes=None, peer_sig_pub_bytes=None, mode=1):
+        super().__init__(destination, established_callback, closed_callback, owner, peer_pub_bytes, peer_sig_pub_bytes, mode)
+        if established_callback is not None:
+            established_callback(self)
 
 
 class _FakeTargetLink:
@@ -419,7 +429,12 @@ class TestFeatureRegressions(unittest.TestCase):
             is_active=lambda: True,
         )
         manager = ProxyManager(
-            {'is_proxy_node': True, 'proxy_routes': [], 'default_request_timeout_seconds': 9.5},
+            {
+                'is_proxy_node': True,
+                'proxy_routes': [],
+                'default_request_timeout_seconds': 9.5,
+                'allow_all_targets_on_proxy_node': True,
+            },
             rns_instance=SimpleNamespace(identity=object()),
             metrics_monitor=metrics,
         )
@@ -487,6 +502,95 @@ class TestFeatureRegressions(unittest.TestCase):
         self.assertGreaterEqual(metrics.proxy_request_durations[-1][3], 0)
         self.assertTrue(any(item[:4] == ('default', 'request', 'proxy_link_setup', 'timeout') for item in metrics.proxy_request_phase_durations))
 
+    def test_proxy_manager_times_out_when_proxy_never_responds(self):
+        errors = []
+        metrics = _FakeMetrics()
+        manager = ProxyManager(
+            {
+                'is_proxy_node': False,
+                'proxy_routes': [{
+                    'alias': 'default',
+                    'entry_destination_name': 'ares.proxy.edge',
+                    'exit_node_identity_hash': 'abcdef1234567890abcdef1234567890',
+                    'allow_all_targets': True,
+                }],
+            },
+            rns_instance=SimpleNamespace(identity=object()),
+            metrics_monitor=metrics,
+        )
+        with patch('akita_ares.features.proxying.Identity.recall', return_value=SimpleNamespace()), \
+             patch('akita_ares.features.proxying.Destination', _FakeProxyDestination), \
+             patch('akita_ares.features.proxying.Link', _NoResponseClientProxyLink):
+            request_id = manager.send_via_proxy(
+                'abcdef1234567890abcdef1234567890',
+                b'data',
+                response_callback=lambda payload, error: errors.append(error),
+                target_destination_name='app_name.service_behind_firewall.data_service',
+                request_path='/status',
+                request_timeout_s=0.01,
+            )
+            self.assertIsNotNone(request_id)
+            time.sleep(0.05)
+        self.assertEqual(errors, [f'proxy response timeout for request {request_id}'])
+        self.assertEqual(metrics.proxy_request_outcomes[-1], ('default', 'request', 'timeout'))
+
+    def test_proxy_node_denies_targets_without_inbound_policy(self):
+        client_link = SimpleNamespace(
+            link_id=b'client-link',
+            sent_messages=[],
+            send=lambda payload: client_link.sent_messages.append(json.loads(payload.decode('utf-8'))),
+            is_active=lambda: True,
+        )
+        manager = ProxyManager(
+            {'is_proxy_node': False, 'proxy_routes': []},
+            rns_instance=SimpleNamespace(identity=object()),
+        )
+        resource = SimpleNamespace(data=json.dumps({
+            'version': '1.0',
+            'type': 'request',
+            'request_id': 'req-denied',
+            'target_destination_hash': 'abcdef1234567890abcdef1234567890',
+            'target_destination_name': 'private.service.control',
+            'request_path': '/status',
+            'payload': base64.b64encode(b'data').decode('utf-8'),
+        }).encode('utf-8'))
+        manager._handle_proxied_request_on_link(resource, client_link)
+        self.assertEqual(client_link.sent_messages[0]['error'], 'target_destination_denied_by_proxy_node_policy')
+
+    def test_proxy_manager_uses_rns_resource_when_link_has_no_send_adapter(self):
+        captured = {}
+
+        class ResourceFactory:
+            def __init__(self, data, link, callback=None, timeout=None):
+                captured.update(data=data, link=link, callback=callback, timeout=timeout)
+
+        manager = ProxyManager(
+            {'is_proxy_node': False, 'proxy_routes': []},
+            rns_instance=SimpleNamespace(identity=object()),
+        )
+        link = SimpleNamespace()
+        callback = lambda resource: None
+        with patch('akita_ares.features.proxying.Resource', ResourceFactory):
+            receipt = manager._send_link_payload(link, b'payload', callback, timeout=4.5)
+        self.assertIsInstance(receipt, ResourceFactory)
+        self.assertEqual(captured['data'], b'payload')
+        self.assertIs(captured['link'], link)
+        self.assertIs(captured['callback'], callback)
+        self.assertEqual(captured['timeout'], 4.5)
+
+    def test_proxy_manager_configures_real_resource_conclusion_callback(self):
+        link = SimpleNamespace(strategy=None, callback=None)
+        link.set_resource_strategy = lambda strategy: setattr(link, 'strategy', strategy)
+        link.set_resource_concluded_callback = lambda callback: setattr(link, 'callback', callback)
+        callback = lambda resource: None
+        manager = ProxyManager(
+            {'is_proxy_node': False, 'proxy_routes': []},
+            rns_instance=SimpleNamespace(identity=object()),
+        )
+        manager._configure_link_resource_receiver(link, callback)
+        self.assertEqual(link.strategy, proxying.Link.ACCEPT_ALL)
+        self.assertIs(link.callback, callback)
+
     def test_retry_manager_honors_zero_retries(self):
         attempts = {'count': 0}
 
@@ -497,4 +601,29 @@ class TestFeatureRegressions(unittest.TestCase):
         manager = RetryManager({'default_max_retries': 3, 'default_delay_seconds': 0})
         with self.assertRaises(ValueError):
             manager.exec_w_retry(fail_once, max_r=0, delay_s=0, op_name='probe')
+        self.assertEqual(attempts['count'], 1)
+
+    def test_retry_manager_retries_transient_io_errors(self):
+        attempts = {'count': 0}
+
+        def transient_operation():
+            attempts['count'] += 1
+            if attempts['count'] == 1:
+                raise TimeoutError('temporary timeout')
+            return 'ok'
+
+        manager = RetryManager({'default_max_retries': 2, 'default_delay_seconds': 0})
+        self.assertEqual(manager.exec_w_retry(transient_operation), 'ok')
+        self.assertEqual(attempts['count'], 2)
+
+    def test_retry_manager_does_not_retry_programming_errors_by_default(self):
+        attempts = {'count': 0}
+
+        def invalid_operation():
+            attempts['count'] += 1
+            raise ValueError('invalid input')
+
+        manager = RetryManager({'default_max_retries': 3, 'default_delay_seconds': 0})
+        with self.assertRaises(ValueError):
+            manager.exec_w_retry(invalid_operation)
         self.assertEqual(attempts['count'], 1)

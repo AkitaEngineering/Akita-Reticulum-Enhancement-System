@@ -26,7 +26,7 @@
     },
     "path_selection": {
         "enabled": true,
-        "default_metric": "rtt",
+        "default_metric": "hops",
         "metric_update_interval_seconds": 60,
         "custom_metrics_module": null,
         "rtt_probe_timeout_seconds": 5,

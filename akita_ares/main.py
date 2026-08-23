@@ -1,193 +1,323 @@
+import os
+import signal
+import sys
+import sysconfig
+import threading
 
-import time, os, signal, sys, logging, threading # Added threading
+from .cli.main_cli import parse_args
 from .core.config_manager import ConfigManager
-from .core.logger import setup_logging, get_logger, update_module_log_levels, ARES_LOGGER_NAME
-from .features import request_retries, path_selection, proxying, monitoring
-from .cli.main_cli import parse_args, handle_start_command
+from .core.logger import get_logger, setup_logging, update_module_log_levels
+from .features import monitoring, path_selection, proxying, request_retries
 
-# Attempt to import RNS
 try:
     import RNS
+
     RNS_AVAILABLE = True
 except ImportError:
-    print("CRITICAL: Reticulum (RNS) library not found. ARES cannot function.", file=sys.stderr)
+    RNS = None
     RNS_AVAILABLE = False
-    # Optionally exit here if RNS is absolutely required
-    # sys.exit(1)
 
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "examples", "sample_config.json")
-DEFAULT_SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "examples", "config_schema.json")
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _bundled_example_path(filename):
+    source_path = os.path.join(PROJECT_ROOT, "examples", filename)
+    if os.path.exists(source_path):
+        return source_path
+    return os.path.join(sysconfig.get_path("data"), "share", "akita-ares", "examples", filename)
+
+
+DEFAULT_CONFIG_PATH = _bundled_example_path("sample_config.json")
+DEFAULT_SCHEMA_PATH = _bundled_example_path("config_schema.json")
+
 
 class ARESApp:
     def __init__(self, args):
-        self.args = args; self.cli_args_config_path = args.config; self.cli_args_schema_path = args.schema
-        effective_config_path = self.cli_args_config_path or DEFAULT_CONFIG_PATH
-        config_specified_schema_path = None
-        if not self.cli_args_schema_path:
-            try:
-                peek_manager = ConfigManager(effective_config_path, schema_fp=None, validate_on_load=False)
-                config_specified_schema_path = peek_manager.get_section('ares_core').get('config_schema_path')
-            except Exception as e: print(f"Warning: Could not pre-load config '{effective_config_path}': {e}", file=sys.stderr)
-        effective_schema_path = self.cli_args_schema_path or config_specified_schema_path or DEFAULT_SCHEMA_PATH
-        if not os.path.isabs(effective_schema_path) and '~' not in effective_schema_path:
-            if self.cli_args_schema_path: pass
-            elif config_specified_schema_path: effective_schema_path = os.path.join(os.path.dirname(effective_config_path), effective_schema_path)
-        self.config_manager = ConfigManager(effective_config_path, effective_schema_path)
-        self.config = self.config_manager.get_config()
-        log_config = self.config.get('logging', {}); cli_log_level = self.args.loglevel; effective_log_level = cli_log_level or log_config.get('level', 'INFO')
-        setup_logging(level=effective_log_level, log_file=log_config.get('file', 'ares.log'), max_bytes=log_config.get('max_bytes', 10*1024*1024), backup_count=log_config.get('backup_count', 5), console_output=log_config.get('console_output', True), module_levels=log_config.get('module_levels'))
+        self.args = args
         self.logger = get_logger("ARESApp")
-        self.logger.info(f"ARES Version {self.__get_version()} initializing...")
-        self.logger.info(f"Using config: {self.config_manager.config_fp}")
-        if self.config_manager.schema_path and os.path.exists(self.config_manager.schema_path): self.logger.info(f"Using schema: {self.config_manager.schema_path}")
-        elif self.config_manager.schema_path: self.logger.warning(f"Schema not found: {self.config_manager.schema_path}. Validation skipped.")
-        if cli_log_level: self.logger.info(f"Log level overridden by CLI to: {cli_log_level}")
-        else: self.logger.info(f"Effective global log level: {effective_log_level}")
+        self.rns_instance = None
+        self.rns_identity = None
+        self.retry_manager = None
+        self.path_selector = None
+        self.proxy_manager = None
+        self.metrics_monitor = None
+        self._stop_event = threading.Event()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = False
 
-        self.rns_instance = self._initialize_rns() # Initialize RNS
-        if not self.rns_instance and RNS_AVAILABLE: # Check if init failed but lib was found
-             self.logger.critical("RNS initialization failed. Exiting.")
-             sys.exit(1)
-        elif not RNS_AVAILABLE:
-             self.logger.warning("RNS library not found. ARES features requiring RNS will be disabled or non-functional.")
+        effective_config_path = args.config or DEFAULT_CONFIG_PATH
+        effective_schema_path = self._resolve_schema_path(effective_config_path, args.schema)
+        self.config_manager = ConfigManager(effective_config_path, effective_schema_path)
+        self.config_manager.require_valid(require_schema=True)
+        self.config = self.config_manager.get_config()
 
+        log_config = self.config.get("logging", {})
+        effective_log_level = args.loglevel or log_config.get("level", "INFO")
+        setup_logging(
+            level=effective_log_level,
+            log_file=log_config.get("file", "ares.log"),
+            max_bytes=log_config.get("max_bytes", 10 * 1024 * 1024),
+            backup_count=log_config.get("backup_count", 5),
+            console_output=log_config.get("console_output", True),
+            module_levels=log_config.get("module_levels"),
+        )
+        self.logger = get_logger("ARESApp")
+        self.logger.info("ARES version %s initializing", self._get_version())
+        self.logger.info("Using config %s and schema %s", self.config_manager.config_fp, effective_schema_path)
 
-        self.retry_manager = None; self.path_selector = None; self.proxy_manager = None; self.metrics_monitor = None
-        self._initialize_features(); self._setup_signal_handlers()
-        self.logger.info("ARES initialization complete.")
-
-    def __get_version(self):
+        if not RNS_AVAILABLE:
+            raise RuntimeError("Reticulum (RNS) is required to start ARES")
         try:
-            from . import VERSION
-            return VERSION
-        except ImportError:
-            return "unknown"
+            self.rns_instance = self._initialize_rns()
+            self.rns_identity = self._load_or_create_identity()
+            self._initialize_features()
+            self._setup_signal_handlers()
+        except Exception:
+            self.shutdown()
+            raise
+        self.logger.info("ARES initialization complete")
+
+    @staticmethod
+    def _resolve_schema_path(config_path, cli_schema_path):
+        if cli_schema_path:
+            return os.path.abspath(os.path.expanduser(cli_schema_path))
+        configured_path = None
+        try:
+            peek_manager = ConfigManager(config_path, schema_fp=None, validate_on_load=False)
+            if peek_manager.last_load_error is None:
+                configured_path = peek_manager.get_section("ares_core").get("config_schema_path")
+        except (OSError, TypeError, ValueError):
+            configured_path = None
+        if configured_path:
+            configured_path = os.path.expanduser(configured_path)
+            if not os.path.isabs(configured_path):
+                configured_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), configured_path)
+            return os.path.abspath(configured_path)
+        return DEFAULT_SCHEMA_PATH
+
+    @staticmethod
+    def _get_version():
+        from . import VERSION
+
+        return VERSION
 
     def _initialize_rns(self):
-        """ Initializes the Reticulum instance. """
-        if not RNS_AVAILABLE:
-            return None
+        core_config = self.config.get("ares_core", {})
+        config_directory = os.path.abspath(
+            os.path.expanduser(core_config.get("rns_config_path", "~/.reticulum"))
+        )
+        os.makedirs(config_directory, mode=0o750, exist_ok=True)
+        rns_instance = RNS.Reticulum(configdir=config_directory, loglevel=RNS.LOG_WARNING)
+        needs_transport = bool(core_config.get("enable_transport_node_features", False))
+        if needs_transport and not RNS.Reticulum.transport_enabled():
+            raise RuntimeError(
+                "ARES transport-node features are enabled, but Reticulum transport is disabled"
+            )
+        return rns_instance
 
-        self.logger.info("Initializing Reticulum instance...")
-        try:
-            rns_config_path_str = self.config.get('ares_core', {}).get('rns_config_path', '~/.reticulum')
-            expanded_rns_config_path = os.path.expanduser(rns_config_path_str)
-            if not os.path.isdir(expanded_rns_config_path):
-                self.logger.warning(f"RNS config directory not found: {expanded_rns_config_path}. RNS will use defaults. Creating directory.")
+    def _load_or_create_identity(self):
+        core_config = self.config.get("ares_core", {})
+        identity_path = core_config.get("identity_path")
+        if not identity_path:
+            rns_config_path = os.path.abspath(
+                os.path.expanduser(core_config.get("rns_config_path", "~/.reticulum"))
+            )
+            identity_path = os.path.join(rns_config_path, "ares_identity")
+        identity_path = os.path.abspath(os.path.expanduser(identity_path))
+        if os.path.exists(identity_path):
+            identity = RNS.Identity.from_file(identity_path)
+            if identity is None:
+                raise RuntimeError(f"Unable to load ARES identity from {identity_path}")
+        else:
+            os.makedirs(os.path.dirname(identity_path), mode=0o750, exist_ok=True)
+            identity = RNS.Identity()
+            file_descriptor = os.open(
+                identity_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            os.close(file_descriptor)
+            if not identity.to_file(identity_path):
                 try:
-                    os.makedirs(expanded_rns_config_path, exist_ok=True)
-                except OSError as e:
-                    self.logger.error(f"Could not create RNS config directory {expanded_rns_config_path}: {e}")
-                    # Continue, RNS might handle it internally or fail later
-
-            # Initialize Reticulum. This might block if interfaces take time.
-            # Consider running this in a separate thread if it blocks too long.
-            rns_instance = RNS.Reticulum(configdir=expanded_rns_config_path, loglevel=logging.WARNING) # Use a quieter log level for RNS itself?
-
-            # Check if transport is enabled if ARES needs it (e.g., for proxy node)
-            ares_needs_transport = self.config.get('destination_proxying',{}).get('is_proxy_node', False) # Example check
-            if ares_needs_transport and not rns_instance.is_transport_enabled():
-               self.logger.warning("ARES feature (e.g., Proxy Node) requires Transport, but Reticulum transport is NOT enabled in its config. Functionality may be limited.")
-
-            self.logger.info(f"Reticulum instance initialized using config directory: {expanded_rns_config_path}")
-            return rns_instance
-        except ImportError: # Should have been caught earlier, but double-check
-             self.logger.critical("RNS library import failed during initialization.")
-             return None
-        except Exception as e:
-            self.logger.critical(f"Failed to initialize Reticulum: {e}", exc_info=True) # Log traceback
-            return None
+                    os.unlink(identity_path)
+                except OSError:
+                    self.logger.error("Unable to remove incomplete identity file %s", identity_path)
+                raise RuntimeError(f"Unable to persist ARES identity to {identity_path}")
+        os.chmod(identity_path, 0o600)
+        self.logger.info("ARES identity loaded: %s", identity.hexhash)
+        return identity
 
     def _initialize_features(self):
-        self.logger.info("Initializing/updating ARES features..."); self.config = self.config_manager.get_config(); active_feature_count = 0
-        update_module_log_levels(self.config.get('logging', {}).get('module_levels'))
-        monitoring_config = self.config.get('monitoring', {})
-        if monitoring_config.get('enabled', True):
-            if not self.metrics_monitor: self.metrics_monitor = monitoring.MetricsMonitor(config=monitoring_config); self.metrics_monitor.start(); self.logger.info(f"Metrics Monitor initialized. Port {monitoring_config.get('prometheus_port', 9876)}.")
-            else: self.metrics_monitor.update_config(monitoring_config); self.logger.info("Metrics Monitor config updated.")
-        retry_config = self.config.get('request_retries', {})
-        if retry_config.get('enabled', False):
-            active_feature_count += 1
-            if not self.retry_manager: self.retry_manager = request_retries.RetryManager(config=retry_config, metrics_monitor=self.metrics_monitor); self.logger.info("RetryMan initialized.")
-            else: self.retry_manager.update_config(retry_config); self.logger.info("RetryMan config updated.")
-        elif self.retry_manager: self.logger.info("Disabling RetryMan."); self.retry_manager = None
-        path_selection_config = self.config.get('path_selection', {})
-        if path_selection_config.get('enabled', False):
-            active_feature_count += 1
-            if not self.path_selector: self.path_selector = path_selection.PathSelector(config=path_selection_config, rns_instance=self.rns_instance, metrics_monitor=self.metrics_monitor); self.logger.info("PathSel initialized.")
-            else: self.path_selector.update_config(path_selection_config); self.logger.info("PathSel config updated.")
-        elif self.path_selector: self.logger.info("Disabling PathSel."); self.path_selector.stop() if hasattr(self.path_selector, 'stop') else None; self.path_selector = None
-        proxy_config = self.config.get('destination_proxying', {})
-        if proxy_config.get('enabled', False):
-            # Only enable proxy manager if RNS is available
-            if RNS_AVAILABLE and self.rns_instance:
-                active_feature_count += 1
-                if not self.proxy_manager: self.proxy_manager = proxying.ProxyManager(config=proxy_config, rns_instance=self.rns_instance, metrics_monitor=self.metrics_monitor); self.logger.info("ProxyMan initialized.")
-                else: self.proxy_manager.update_config(proxy_config); self.logger.info("ProxyMan config updated.")
+        self.config = self.config_manager.get_config()
+        update_module_log_levels(self.config.get("logging", {}).get("module_levels"))
+        active_feature_count = 0
+
+        monitoring_config = self.config.get("monitoring", {})
+        if monitoring_config.get("enabled", True):
+            if self.metrics_monitor is None:
+                self.metrics_monitor = monitoring.MetricsMonitor(monitoring_config)
+                self.metrics_monitor.start()
             else:
-                 self.logger.warning("Proxying feature enabled in config, but RNS is not available or failed to initialize. Disabling ProxyManager.")
-                 if self.proxy_manager: self.proxy_manager.shutdown(); self.proxy_manager = None # Ensure shutdown if it existed
-        elif self.proxy_manager: self.logger.info("Disabling ProxyMan."); self.proxy_manager.shutdown() if hasattr(self.proxy_manager, 'shutdown') else None; self.proxy_manager = None
-        if self.metrics_monitor: self.metrics_monitor.set_active_features_count(active_feature_count); self.metrics_monitor.set_active_proxy_routes_count(len(self.proxy_manager.proxy_routes)) if self.proxy_manager else self.metrics_monitor.set_active_proxy_routes_count(0)
-        self.logger.info(f"Feature init/update finished. Active features: {active_feature_count}")
+                self.metrics_monitor.update_config(monitoring_config)
+        elif self.metrics_monitor is not None:
+            self.metrics_monitor.stop()
+            self.metrics_monitor = None
+
+        retry_config = self.config.get("request_retries", {})
+        if retry_config.get("enabled", False):
+            active_feature_count += 1
+            if self.retry_manager is None:
+                self.retry_manager = request_retries.RetryManager(retry_config, self.metrics_monitor)
+            else:
+                self.retry_manager.metrics_monitor = self.metrics_monitor
+                self.retry_manager.update_config(retry_config)
+        else:
+            self.retry_manager = None
+
+        path_config = self.config.get("path_selection", {})
+        if path_config.get("enabled", False):
+            active_feature_count += 1
+            if self.path_selector is None:
+                self.path_selector = path_selection.PathSelector(
+                    path_config,
+                    rns_instance=self.rns_instance,
+                    metrics_monitor=self.metrics_monitor,
+                )
+            else:
+                self.path_selector.metrics_monitor = self.metrics_monitor
+                self.path_selector.update_config(path_config)
+        elif self.path_selector is not None:
+            self.path_selector.stop()
+            self.path_selector = None
+
+        proxy_config = self.config.get("destination_proxying", {})
+        if proxy_config.get("enabled", False):
+            active_feature_count += 1
+            if self.proxy_manager is None:
+                self.proxy_manager = proxying.ProxyManager(
+                    proxy_config,
+                    rns_instance=self.rns_instance,
+                    metrics_monitor=self.metrics_monitor,
+                    identity=self.rns_identity,
+                    path_selector=self.path_selector,
+                )
+                if proxy_config.get("is_proxy_node", False) and self.proxy_manager.service_destination is None:
+                    raise RuntimeError("Proxy-node service destination could not be initialized")
+            else:
+                self.proxy_manager.metrics_monitor = self.metrics_monitor
+                self.proxy_manager.path_selector = self.path_selector
+                self.proxy_manager.update_config(proxy_config)
+        elif self.proxy_manager is not None:
+            self.proxy_manager.shutdown()
+            self.proxy_manager = None
+
+        if self.metrics_monitor:
+            self.metrics_monitor.set_active_features_count(active_feature_count)
+            route_count = len(self.proxy_manager.proxy_routes) if self.proxy_manager else 0
+            self.metrics_monitor.set_active_proxy_routes_count(route_count)
 
     def _setup_signal_handlers(self):
-        if hasattr(signal,'SIGHUP'): signal.signal(signal.SIGHUP,self.handle_sighup); self.logger.info("SIGHUP handler registered.")
-        else: self.logger.info("SIGHUP not available.")
-        signal.signal(signal.SIGINT,self.handle_sigint_sigterm); signal.signal(signal.SIGTERM,self.handle_sigint_sigterm); self.logger.info("SIGINT/SIGTERM handlers registered.")
+        if threading.current_thread() is not threading.main_thread():
+            self.logger.warning("Signal handlers can only be installed from the main thread")
+            return
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, self.handle_sighup)
+        signal.signal(signal.SIGINT, self.handle_sigint_sigterm)
+        signal.signal(signal.SIGTERM, self.handle_sigint_sigterm)
 
     def handle_sighup(self, signum, frame):
-        self.logger.info(f"SIGHUP received. Reloading config & re-init features..."); self.config_manager.reload_config(); self.config = self.config_manager.get_config()
-        # Re-apply log levels *after* getting new config
-        new_log_config = self.config.get('logging', {})
-        cli_log_level = self.args.loglevel
-        effective_log_level = cli_log_level or new_log_config.get('level', 'INFO')
-        logging.getLogger(ARES_LOGGER_NAME).setLevel(getattr(logging, effective_log_level))
-        if cli_log_level: self.logger.info(f"Re-applying CLI log level override: {cli_log_level}")
-        update_module_log_levels(new_log_config.get('module_levels'))
-        # Re-initialize features
-        self._initialize_features(); self.logger.info("Config reloaded & features re-initialized.")
+        self.logger.info("SIGHUP received; reloading configuration")
+        old_config = self.config_manager.get_config()
+        self.config_manager.reload_config()
+        if not self.config_manager.last_reload_succeeded:
+            return
+        new_config = self.config_manager.get_config()
+        old_core = old_config.get("ares_core", {})
+        new_core = new_config.get("ares_core", {})
+        immutable_keys = ("rns_config_path", "identity_path")
+        changed_immutable_keys = [
+            key for key in immutable_keys if old_core.get(key) != new_core.get(key)
+        ]
+        if changed_immutable_keys:
+            self.config_manager.config = old_config
+            self.config_manager.last_reload_succeeded = False
+            self.logger.error(
+                "Config reload rejected because %s require a process restart",
+                ", ".join(changed_immutable_keys),
+            )
+            return
+        log_config = new_config.get("logging", {})
+        effective_level = self.args.loglevel or log_config.get("level", "INFO")
+        try:
+            setup_logging(
+                level=effective_level,
+                log_file=log_config.get("file", "ares.log"),
+                max_bytes=log_config.get("max_bytes", 10 * 1024 * 1024),
+                backup_count=log_config.get("backup_count", 5),
+                console_output=log_config.get("console_output", True),
+                module_levels=log_config.get("module_levels"),
+            )
+            self._initialize_features()
+        except Exception as exc:
+            self.logger.error("Unable to apply reloaded configuration: %s", exc, exc_info=True)
+            self.config_manager.config = old_config
+            self.config_manager.last_reload_succeeded = False
+            try:
+                self._initialize_features()
+            except Exception as rollback_exc:
+                self.logger.critical(
+                    "Unable to restore the previous feature configuration: %s",
+                    rollback_exc,
+                    exc_info=True,
+                )
+                self._stop_event.set()
 
-    def handle_sigint_sigterm(self, signum, frame): self.logger.info(f"Signal {signum} received. Shutting down..."); self.shutdown(); sys.exit(0)
+    def handle_sigint_sigterm(self, signum, frame):
+        self.logger.info("Signal %s received; stopping", signum)
+        self._stop_event.set()
 
     def run(self):
-        if not RNS_AVAILABLE and not self.rns_instance :
-             self.logger.critical("Cannot run ARES without a functional RNS instance (library missing or init failed).")
-             return # Exit run method
-
-        self.logger.info("ARES running. Ctrl+C or SIGTERM to exit.")
+        self.logger.info("ARES running")
         try:
-            while True:
-                # Check if RNS instance is still alive (conceptual check)
-                # if self.rns_instance and not self.rns_instance.is_running(): # Assuming RNS has such a method
-                #    self.logger.error("RNS instance appears to have stopped. Shutting down ARES.")
-                #    break
-
-                if self.path_selector: self.path_selector.periodic_update()
-                if self.proxy_manager: self.proxy_manager.periodic_check()
-                time.sleep(self.config.get('ares_core',{}).get('main_loop_sleep_interval',30)); self.logger.debug("ARES main loop tick.")
-        except KeyboardInterrupt: self.logger.info("KeyboardInterrupt. Shutting down.")
-        finally: self.shutdown()
+            while not self._stop_event.is_set():
+                if self.path_selector:
+                    self.path_selector.periodic_update()
+                if self.proxy_manager:
+                    self.proxy_manager.periodic_check()
+                interval = self.config.get("ares_core", {}).get("main_loop_sleep_interval", 30)
+                self._stop_event.wait(float(interval))
+        finally:
+            self.shutdown()
 
     def shutdown(self):
-        self.logger.info("ARES shutting down...");
-        if self.path_selector: self.path_selector.stop()
-        if self.proxy_manager: self.proxy_manager.shutdown()
-        if self.metrics_monitor: self.metrics_monitor.stop()
-        # Shutdown RNS instance if ARES owns it
-        if self.rns_instance and hasattr(self.rns_instance, 'exit') :
-            self.logger.info("Shutting down Reticulum instance...")
-            # RNS might exit automatically when program ends, but explicit call is cleaner if available
-            # self.rns_instance.exit()
-        self.logger.info("ARES shutdown complete.")
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            self._shutdown_complete = True
+        self._stop_event.set()
+        if self.path_selector:
+            self.path_selector.stop()
+        if self.proxy_manager:
+            self.proxy_manager.shutdown()
+        if self.metrics_monitor:
+            self.metrics_monitor.stop()
+        if self.rns_instance is not None and RNS_AVAILABLE:
+            RNS.Reticulum.exit_handler()
+        self.logger.info("ARES shutdown complete")
+
 
 def main_entry():
     args = parse_args()
-    if hasattr(args, 'func'):
+    try:
         args.func(args, ARESApp)
-    if args.command != 'start':
-        return
-    app = ARESApp(args=args)
-    app.run()
+    except (OSError, ValueError) as exc:
+        get_logger("ARESApp").critical("ARES command failed: %s", exc)
+        raise SystemExit(1) from exc
+    except Exception as exc:
+        get_logger("ARESApp").critical("ARES command failed: %s", exc, exc_info=True)
+        raise SystemExit(1) from exc
 
-if __name__ == "__main__": main_entry()
+
+if __name__ == "__main__":
+    main_entry()

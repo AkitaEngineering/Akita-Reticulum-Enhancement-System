@@ -1,105 +1,297 @@
-import time, importlib, random
+import importlib
+import math
+import time
+
 from akita_ares.core.logger import get_logger
+
 try:
     import RNS
+
     RNS_AVAILABLE = True
 except ImportError:
+    RNS = None
     RNS_AVAILABLE = False
+
+
 class PathSelector:
+    """Evaluate Reticulum's discovered paths without fabricating measurements.
+
+    Stock Reticulum exposes its active path per destination. Adapters may expose
+    multiple candidates through ``get_paths(destination_hash)``; ARES evaluates
+    all candidates when that extension is present.
+    """
+
+    SUPPORTED_METRICS = {"rtt", "hops", "link_quality", "custom"}
+
     def __init__(self, config, rns_instance=None, metrics_monitor=None):
-        self.rns_instance, self.metrics_monitor = rns_instance, metrics_monitor
+        self.rns_instance = rns_instance
+        self.metrics_monitor = metrics_monitor
         self.logger = get_logger("Feature.PathSelector")
-        self.path_metrics_cache, self.known_paths, self.custom_metric_evaluator = {}, {}, None
-        self.update_config(config); self._last_metric_update_time = 0
+        self.path_metrics_cache = {}
+        self.known_paths = {}
+        self.known_path_last_seen = {}
+        self.custom_metric_evaluator = None
+        self.custom_metrics_module_path = None
+        self._last_metric_update_time = 0.0
+        self.update_config(config)
+
     def update_config(self, new_config):
-        self.config = new_config; self.default_metric_type = self.config.get('default_metric','rtt')
-        self.metric_update_interval = self.config.get('metric_update_interval_seconds',60)
-        self.rtt_probe_timeout = self.config.get('rtt_probe_timeout_seconds',5)
-        self.max_paths_to_consider = self.config.get('max_paths_to_consider',5)
-        custom_module_path = self.config.get('custom_metrics_module'); old_path = getattr(self,'custom_metrics_module_path',None)
-        self.custom_metrics_module_path = custom_module_path
-        if custom_module_path != old_path or (custom_module_path and not self.custom_metric_evaluator): self._load_custom_metrics_module()
-        self.logger.info(f"PathSel cfg: Metric={self.default_metric_type}, UpdateInt={self.metric_update_interval}s")
+        self.config = dict(new_config or {})
+        metric_type = self.config.get("default_metric", "hops")
+        if metric_type not in self.SUPPORTED_METRICS:
+            raise ValueError(f"Unsupported path metric: {metric_type!r}")
+        self.default_metric_type = metric_type
+        self.metric_update_interval = float(self.config.get("metric_update_interval_seconds", 60))
+        self.rtt_probe_timeout = float(self.config.get("rtt_probe_timeout_seconds", 5))
+        self.max_paths_to_consider = int(self.config.get("max_paths_to_consider", 5))
+        if self.metric_update_interval <= 0 or self.rtt_probe_timeout <= 0:
+            raise ValueError("path selection intervals and timeouts must be positive")
+        if self.max_paths_to_consider < 1:
+            raise ValueError("max_paths_to_consider must be at least 1")
+
+        module_path = self.config.get("custom_metrics_module")
+        old_path = self.custom_metrics_module_path
+        self.custom_metrics_module_path = module_path
+        if module_path != old_path or (module_path and self.custom_metric_evaluator is None):
+            self._load_custom_metrics_module()
+        self.logger.info(
+            "PathSelector config: metric=%s, update_interval=%ss",
+            self.default_metric_type,
+            self.metric_update_interval,
+        )
+
     def _load_custom_metrics_module(self):
-        if not self.custom_metrics_module_path: self.custom_metric_evaluator = None; self.logger.info("No custom metrics module."); return
-        try:
-            mod = importlib.import_module(self.custom_metrics_module_path)
-            if hasattr(mod,'evaluate_custom_metric'): self.custom_metric_evaluator=mod.evaluate_custom_metric; logger_msg="func 'evaluate_custom_metric'"
-            elif hasattr(mod,'CustomMetricEvaluator'): self.custom_metric_evaluator=getattr(mod,'CustomMetricEvaluator')(); logger_msg="class 'CustomMetricEvaluator'"
-            else: self.logger.error(f"Custom mod {self.custom_metrics_module_path} lacks required func/class."); self.custom_metric_evaluator=None; return
-            self.logger.info(f"Loaded custom metric {logger_msg} from: {self.custom_metrics_module_path}")
-        except Exception as e: self.logger.error(f"Err loading custom metric mod {self.custom_metrics_module_path}: {e}"); self.custom_metric_evaluator=None
-    def _get_rns_paths(self, dest_hash_bytes):
-        if not RNS_AVAILABLE or not self.rns_instance:
-            self.logger.warning("RNS not available for path finding.")
-            return []
-        try:
-            # Assuming RNS has a way to find paths, e.g., via destination
-            # This is conceptual; actual API may differ
-            dest = RNS.Destination.recall(dest_hash_bytes)
-            if not dest:
-                dest = RNS.Destination(dest_hash_bytes, direction=RNS.Destination.OUT)
-            paths = dest.paths  # Assuming dest has a paths attribute
-            return list(paths) if paths else []
-        except Exception as e:
-            self.logger.error(f"Error finding RNS paths for {dest_hash_bytes.hex()[:8]}: {e}")
-            return []
-    def _measure_rtt_for_path(self, path_info_or_id):
-        if not RNS_AVAILABLE or not self.rns_instance:
-            return random.uniform(0.05, 0.5)  # Fallback
-        try:
-            # Conceptual: probe RTT via RNS
-            # Assuming path_info has a probe method or use RNS.Transport.probe
-            # For now, simulate
-            self.logger.debug(f"Probing RTT for path {path_info_or_id}")
-            # Placeholder for actual probe
-            return random.uniform(0.05, 0.5)
-        except Exception as e:
-            self.logger.error(f"Error measuring RTT for path {path_info_or_id}: {e}")
-            return float('inf')
-    def _get_metric_for_path(self, path_info, metric_type):
-        path_id = getattr(path_info,'path_id',str(path_info)); cache = self.path_metrics_cache.setdefault(path_id,{})
-        cached = cache.get(metric_type); now = time.time()
-        if cached and (now - cached.get('timestamp',0)) < self.metric_update_interval/2: return cached['value']
-        value = float('inf')
-        if metric_type=='rtt': value=self._measure_rtt_for_path(path_info)
-        elif metric_type=='hops': value=getattr(path_info,'hops',float('inf'))
-        elif metric_type=='link_quality': value=getattr(path_info,'quality',0) # Assume lower is better cost
-        elif metric_type=='custom' and self.custom_metric_evaluator:
-            try: value=self.custom_metric_evaluator(path_info,self.rns_instance)
-            except Exception as e: self.logger.error(f"Err eval custom metric path {path_id}: {e}"); value=float('inf')
-        cache[metric_type]={'value':value,'timestamp':now}; return value
-    def get_best_path(self, dest_hash_hex):
-        if not self.rns_instance: self.logger.warning("PathSel needs RNS instance."); return None
-        dest_hash_bytes=bytes.fromhex(dest_hash_hex); paths=self._get_rns_paths(dest_hash_bytes)
-        if not paths: self.logger.debug(f"No RNS paths for {dest_hash_hex[:8]}."); return None
-        self.known_paths[dest_hash_hex]=paths; evaluated=[]
-        for p_info in paths[:self.max_paths_to_consider]: metric_val=self._get_metric_for_path(p_info,self.default_metric_type); evaluated.append({'path_info':p_info,'metric_value':metric_val}); self.logger.debug(f"Path {getattr(p_info,'path_id','N/A')} to {dest_hash_hex[:8]}: {self.default_metric_type}={metric_val}")
-        if not evaluated: self.logger.warning(f"No paths evaluated for {dest_hash_hex[:8]}."); return None
-        evaluated.sort(key=lambda x:x['metric_value']); best=evaluated[0]
-        self.logger.info(f"Best path for {dest_hash_hex[:8]} via {getattr(best['path_info'],'path_id','N/A')} with {self.default_metric_type}={best['metric_value']:.4f}")
-        if self.metrics_monitor: self.metrics_monitor.path_selection_evaluations_total.inc(); self.metrics_monitor.path_selection_chosen_metric_value.labels(destination_hash=dest_hash_hex,metric_type=self.default_metric_type).set(best['metric_value'] if best['metric_value']!=float('inf') else -1)
-        return best['path_info']
-    def periodic_update(self):
-        now = time.time()
-        interval = self.metric_update_interval
-        if (now - self._last_metric_update_time) < interval:
+        if not self.custom_metrics_module_path:
+            self.custom_metric_evaluator = None
             return
-        self.logger.info("PathSel periodic update...")
-        self._last_metric_update_time = now
-        # Refresh metrics for known paths
-        for dest_hex, paths in list(self.known_paths.items()):
-            for path_info in paths[:self.max_paths_to_consider]:
-                self._get_metric_for_path(path_info, self.default_metric_type)
-        # Optionally, remove old known_paths if not used recently
-    def influence_rns_routing(self, dest_hash_hex, chosen_path_id):
-        self.logger.info(f"Influencing RNS routing for {dest_hash_hex[:8]} via path {chosen_path_id}")
-        # Conceptual: Use RNS API to influence routing, e.g., set preferred path
-        # Assuming RNS.Transport.influence_path or similar
-        if RNS_AVAILABLE and self.rns_instance:
+        try:
+            module = importlib.import_module(self.custom_metrics_module_path)
+            evaluator = getattr(module, "evaluate_custom_metric", None)
+            if evaluator is None and hasattr(module, "CustomMetricEvaluator"):
+                instance = module.CustomMetricEvaluator()
+                evaluator = getattr(instance, "evaluate_custom_metric", None)
+                if evaluator is None and callable(instance):
+                    evaluator = instance
+            if not callable(evaluator):
+                raise TypeError(
+                    "custom metric module must export evaluate_custom_metric(path, rns_instance) "
+                    "or a callable CustomMetricEvaluator"
+                )
+            self.custom_metric_evaluator = evaluator
+            self.logger.info("Loaded custom path metric from %s", self.custom_metrics_module_path)
+        except (ImportError, AttributeError, TypeError) as exc:
+            self.custom_metric_evaluator = None
+            raise ValueError(
+                f"Unable to load custom metric module {self.custom_metrics_module_path!r}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _field(path_info, name, default=None):
+        if isinstance(path_info, dict):
+            return path_info.get(name, default)
+        return getattr(path_info, name, default)
+
+    @classmethod
+    def _path_id(cls, path_info):
+        explicit = cls._field(path_info, "path_id")
+        if explicit is not None:
+            return str(explicit)
+        components = (
+            cls._field(path_info, "hash"),
+            cls._field(path_info, "via"),
+            cls._field(path_info, "interface"),
+        )
+        normalized = []
+        for component in components:
+            normalized.append(component.hex() if isinstance(component, bytes) else str(component or ""))
+        return "|".join(normalized)
+
+    @staticmethod
+    def _validate_destination_hash(dest_hash_hex):
+        if not isinstance(dest_hash_hex, str) or len(dest_hash_hex) != 32:
+            raise ValueError("destination hash must be a 32-character hexadecimal string")
+        try:
+            return bytes.fromhex(dest_hash_hex)
+        except ValueError as exc:
+            raise ValueError("destination hash must be a 32-character hexadecimal string") from exc
+
+    def _get_rns_paths(self, dest_hash_bytes):
+        if not RNS_AVAILABLE or self.rns_instance is None:
+            self.logger.warning("RNS is unavailable for path discovery.")
+            return []
+        try:
+            get_paths = getattr(self.rns_instance, "get_paths", None)
+            if callable(get_paths):
+                return list(get_paths(dest_hash_bytes) or [])
+
+            get_path_table = getattr(self.rns_instance, "get_path_table", None)
+            if not callable(get_path_table):
+                self.logger.error("The supplied RNS instance does not expose get_path_table().")
+                return []
+            matching_paths = []
+            for entry in get_path_table() or []:
+                entry_hash = self._field(entry, "hash")
+                if entry_hash == dest_hash_bytes or (
+                    isinstance(entry_hash, str) and entry_hash.lower() == dest_hash_bytes.hex()
+                ):
+                    matching_paths.append(entry)
+            if not matching_paths:
+                RNS.Transport.request_path(dest_hash_bytes)
+            return matching_paths
+        except Exception as exc:
+            self.logger.error(
+                "Error discovering RNS paths for %s: %s",
+                dest_hash_bytes.hex()[:8],
+                exc,
+                exc_info=True,
+            )
+            return []
+
+    def _measure_rtt_for_path(self, path_info):
+        for field_name in ("rtt", "latency"):
+            value = self._field(path_info, field_name)
+            if value is not None:
+                try:
+                    value = float(value)
+                    return value if value >= 0 and math.isfinite(value) else math.inf
+                except (TypeError, ValueError):
+                    return math.inf
+        link = self._field(path_info, "link")
+        link_rtt = getattr(link, "rtt", None) if link is not None else None
+        if link_rtt is not None:
             try:
-                # Placeholder for actual influence
-                pass
-            except Exception as e:
-                self.logger.error(f"Error influencing routing: {e}")
-    def stop(self): self.logger.info("PathSelector stopping.")
+                return max(0.0, float(link_rtt))
+            except (TypeError, ValueError):
+                return math.inf
+        probe = self._field(path_info, "probe")
+        if callable(probe):
+            started_at = time.monotonic()
+            try:
+                result = probe(timeout=self.rtt_probe_timeout)
+                if result is False or result is None:
+                    return math.inf
+                reported_rtt = getattr(result, "get_rtt", lambda: None)()
+                return float(reported_rtt) if reported_rtt is not None else time.monotonic() - started_at
+            except (OSError, TimeoutError, ValueError, TypeError) as exc:
+                self.logger.warning("RTT probe failed for %s: %s", self._path_id(path_info), exc)
+        return math.inf
+
+    def _get_metric_for_path(self, path_info, metric_type):
+        path_id = self._path_id(path_info)
+        cache = self.path_metrics_cache.setdefault(path_id, {})
+        now = time.monotonic()
+        cached = cache.get(metric_type)
+        if cached and now - cached["timestamp"] < self.metric_update_interval / 2:
+            return cached["value"]
+
+        if metric_type == "rtt":
+            value = self._measure_rtt_for_path(path_info)
+        elif metric_type == "hops":
+            value = self._field(path_info, "hops", math.inf)
+        elif metric_type == "link_quality":
+            quality = self._field(path_info, "quality", None)
+            value = -float(quality) if quality is not None else math.inf
+        elif metric_type == "custom" and self.custom_metric_evaluator:
+            try:
+                value = self.custom_metric_evaluator(path_info, self.rns_instance)
+            except Exception as exc:
+                self.logger.error("Custom metric failed for %s: %s", path_id, exc, exc_info=True)
+                value = math.inf
+        else:
+            value = math.inf
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = math.inf
+        if not math.isfinite(value):
+            value = math.inf
+        cache[metric_type] = {"value": value, "timestamp": now}
+        return value
+
+    def get_best_path(self, dest_hash_hex):
+        dest_hash_bytes = self._validate_destination_hash(dest_hash_hex)
+        if self.rns_instance is None:
+            self.logger.warning("PathSelector requires an RNS instance.")
+            return None
+        paths = self._get_rns_paths(dest_hash_bytes)
+        if not paths:
+            return None
+
+        now = time.monotonic()
+        self.known_paths[dest_hash_hex] = paths
+        self.known_path_last_seen[dest_hash_hex] = now
+        evaluated = []
+        for path_info in paths[: self.max_paths_to_consider]:
+            metric_value = self._get_metric_for_path(path_info, self.default_metric_type)
+            if math.isfinite(metric_value):
+                evaluated.append((metric_value, path_info))
+        if not evaluated:
+            self.logger.warning(
+                "No measurable %s value is available for destination %s.",
+                self.default_metric_type,
+                dest_hash_hex[:8],
+            )
+            return None
+
+        metric_value, best_path = min(evaluated, key=lambda item: item[0])
+        if self.metrics_monitor:
+            self.metrics_monitor.path_selection_evaluations_total.inc()
+            self.metrics_monitor.path_selection_chosen_metric_value.labels(
+                destination_hash=dest_hash_hex,
+                metric_type=self.default_metric_type,
+            ).set(metric_value)
+        self.logger.info(
+            "Best discovered path for %s is %s with %s=%s",
+            dest_hash_hex[:8],
+            self._path_id(best_path),
+            self.default_metric_type,
+            metric_value,
+        )
+        return best_path
+
+    def periodic_update(self):
+        now = time.monotonic()
+        if now - self._last_metric_update_time < self.metric_update_interval:
+            return
+        self._last_metric_update_time = now
+        stale_after = self.metric_update_interval * 10
+        for destination_hash in list(self.known_paths):
+            if now - self.known_path_last_seen.get(destination_hash, 0) > stale_after:
+                for path in self.known_paths.pop(destination_hash, []):
+                    self.path_metrics_cache.pop(self._path_id(path), None)
+                self.known_path_last_seen.pop(destination_hash, None)
+                continue
+            self.get_best_path(destination_hash)
+
+    def influence_rns_routing(self, dest_hash_hex, chosen_path_id):
+        """Request rediscovery on a selected interface when the adapter exposes it."""
+        destination_hash = self._validate_destination_hash(dest_hash_hex)
+        chosen_path = next(
+            (
+                path
+                for path in self.known_paths.get(dest_hash_hex, [])
+                if self._path_id(path) == str(chosen_path_id)
+            ),
+            None,
+        )
+        if chosen_path is None:
+            self.logger.error("Unknown path %s for destination %s", chosen_path_id, dest_hash_hex[:8])
+            return False
+        interface = self._field(chosen_path, "interface_object") or self._field(chosen_path, "interface")
+        if interface is None or isinstance(interface, str):
+            self.logger.error("Path %s does not expose a usable Reticulum interface object", chosen_path_id)
+            return False
+        try:
+            drop_path = getattr(self.rns_instance, "drop_path", None)
+            if callable(drop_path):
+                drop_path(destination_hash)
+            RNS.Transport.request_path(destination_hash, on_interface=interface)
+            return True
+        except Exception as exc:
+            self.logger.error("Unable to request selected route %s: %s", chosen_path_id, exc, exc_info=True)
+            return False
+
+    def stop(self):
+        self.known_paths.clear()
+        self.known_path_last_seen.clear()
+        self.path_metrics_cache.clear()

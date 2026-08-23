@@ -5,10 +5,7 @@ class TestLogger(unittest.TestCase):
     def tearDown(self):
         root_logger = logging.getLogger(ARES_LOGGER_NAME)
         for h in root_logger.handlers[:]:
-            try:
-                h.close()
-            except Exception:
-                pass
+            h.close()
             root_logger.removeHandler(h)
         self.temp_dir.cleanup()
     def test_setup_logging_defaults(self): setup_logging(log_file=self.log_file_path, console_output=False); root_logger = logging.getLogger(ARES_LOGGER_NAME); self.assertEqual(root_logger.level, logging.INFO); self.assertTrue(any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root_logger.handlers)); self.assertTrue(os.path.exists(self.log_file_path))

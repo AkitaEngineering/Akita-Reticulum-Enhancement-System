@@ -1,7 +1,15 @@
-import argparse, os, re, sys, time, json, urllib.request 
+import argparse, os, re, sys, sysconfig, time, json, urllib.request
 from akita_ares import VERSION 
-DEFAULT_CONFIG_PATH_CLI = os.path.join(os.path.dirname(__file__),"..","..","examples","sample_config.json")
-DEFAULT_SCHEMA_PATH_CLI = os.path.join(os.path.dirname(__file__),"..","..","examples","config_schema.json")
+PROJECT_ROOT_CLI = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+def _bundled_example_path(filename):
+    source_path = os.path.join(PROJECT_ROOT_CLI, "examples", filename)
+    if os.path.exists(source_path):
+        return source_path
+    return os.path.join(sysconfig.get_path("data"), "share", "akita-ares", "examples", filename)
+
+DEFAULT_CONFIG_PATH_CLI = _bundled_example_path("sample_config.json")
+DEFAULT_SCHEMA_PATH_CLI = _bundled_example_path("config_schema.json")
 PROMETHEUS_LINE_RE = re.compile(r'^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$')
 PROMETHEUS_LABEL_RE = re.compile(r'(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)="(?P<value>(?:\\.|[^"\\])*)"')
 DEFAULT_STATUS_WAIT_SECONDS = 0.0
@@ -12,23 +20,23 @@ PROXY_TIMEOUT_ERROR_COUNT_THRESHOLD = 3
 PROXY_TIMEOUT_ERROR_RATE_THRESHOLD = 0.2
 
 def _resolve_schema_path(args, cfg_path):
-    schema_path = args.schema
-    pre_conf = {}
-    if not schema_path:
-        try:
-            if os.path.exists(cfg_path):
-                with open(cfg_path,'r', encoding='utf-8') as f:
-                    pre_conf=json.load(f)
-            schema_path=pre_conf.get('ares_core',{}).get('config_schema_path')
-        except Exception:
-            pre_conf = {}
-    if not schema_path:
-        schema_path=DEFAULT_SCHEMA_PATH_CLI
-    if not os.path.isabs(schema_path) and '~' not in schema_path:
-         if args.schema: pass 
-         elif pre_conf.get('ares_core',{}).get('config_schema_path'): schema_path=os.path.join(os.path.dirname(cfg_path),schema_path)
-         else: schema_path=DEFAULT_SCHEMA_PATH_CLI
-    return schema_path
+    if args.schema:
+        return os.path.abspath(os.path.expanduser(args.schema))
+    configured_schema_path = None
+    try:
+        if os.path.exists(cfg_path):
+            with open(cfg_path, 'r', encoding='utf-8') as config_file:
+                pre_config = json.load(config_file)
+            if isinstance(pre_config, dict):
+                configured_schema_path = pre_config.get('ares_core', {}).get('config_schema_path')
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        configured_schema_path = None
+    if configured_schema_path:
+        schema_path = os.path.expanduser(configured_schema_path)
+        if not os.path.isabs(schema_path):
+            schema_path = os.path.join(os.path.dirname(os.path.abspath(cfg_path)), schema_path)
+        return os.path.abspath(schema_path)
+    return os.path.abspath(DEFAULT_SCHEMA_PATH_CLI)
 
 def _rns_available():
     try:
@@ -45,7 +53,11 @@ def _normalize_status_metrics_host(listen_host):
 def _parse_prometheus_labels(labels_blob):
     labels = {}
     for match in PROMETHEUS_LABEL_RE.finditer(labels_blob or ''):
-        labels[match.group('name')] = bytes(match.group('value'), 'utf-8').decode('unicode_escape')
+        encoded_value = match.group('value')
+        try:
+            labels[match.group('name')] = json.loads(f'"{encoded_value}"')
+        except json.JSONDecodeError:
+            labels[match.group('name')] = encoded_value
     return labels
 
 def _parse_prometheus_metrics(metrics_body):
@@ -141,7 +153,12 @@ def _fetch_runtime_metrics(config, wait_seconds=DEFAULT_STATUS_WAIT_SECONDS):
     while True:
         try:
             response = urllib.request.urlopen(endpoint, timeout=1)
-            metrics_body = response.read().decode('utf-8')
+            try:
+                metrics_body = response.read().decode('utf-8')
+            finally:
+                close_response = getattr(response, 'close', None)
+                if callable(close_response):
+                    close_response()
             break
         except Exception as exc:
             if time.monotonic() >= deadline:
@@ -276,6 +293,7 @@ def _build_status_payload(args):
 
     try:
         manager = ConfigManager(config_fp=cfg_path, schema_fp=schema_path)
+        manager.require_valid(require_schema=True)
     except Exception as exc:
         return {"status": "error", "message": str(exc)}, 1
 
@@ -342,7 +360,11 @@ def parse_args(args=None):
     if remaining:
         parser.error(f"unrecognized arguments: {' '.join(remaining)}")
     return parsed_args
-def handle_start_command(args, app_class): print(f"CLI: Preparing to start ARES...") 
+def handle_start_command(args, app_class):
+    if not args.config:
+        raise ValueError("--config is required when starting ARES")
+    app = app_class(args=args)
+    app.run()
 def handle_configtest_command(args, app_class):
     from akita_ares.core.config_manager import ConfigManager; from akita_ares.core.logger import setup_logging, get_logger; import jsonschema
     setup_logging(level=args.loglevel or 'INFO', console_output=True, log_file=None); logger = get_logger("ConfigTest"); logger.info("Performing config test...")
@@ -353,10 +375,8 @@ def handle_configtest_command(args, app_class):
     else: logger.info("No schema specified.")
     try:
         manager = ConfigManager(config_fp=cfg_path, schema_fp=schema_path)
-        if not manager.config and os.path.exists(cfg_path): logger.error("Config test FAILED: File exists but failed load/parse."); sys.exit(1)
-        elif not os.path.exists(cfg_path): logger.error(f"Config test FAILED: File not found: {cfg_path}"); sys.exit(1)
-        if manager.schema: logger.info("Config test successful: Parsed and validated.")
-        else: logger.info("Config test successful: Parsed (schema validation skipped/failed load).")
+        manager.require_valid(require_schema=True)
+        logger.info("Config test successful: Parsed and validated.")
         sys.exit(0)
     except jsonschema.exceptions.ValidationError as e: logger.error(f"Config validation FAILED: {e.message} path {list(e.path)}"); sys.exit(1)
     except Exception as e: logger.error(f"Config test FAILED: {e}"); sys.exit(1)
@@ -371,6 +391,3 @@ def handle_healthcheck_command(args, app_class):
         exit_code = 0 if status.get('health_summary', {}).get('overall') == 'ok' else 1
     print(json.dumps(status, indent=2, sort_keys=True))
     sys.exit(exit_code)
-if __name__ == "__main__":
-    print("Testing CLI parsing (run 'python -m akita_ares.main' to start app)..."); test_args = parse_args() 
-    print(f"Parsed arguments: {test_args}"); print(f"Function to call: {test_args.func.__name__}") if hasattr(test_args,'func') else print("Default command logic handled by caller.")
